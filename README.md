@@ -1,6 +1,6 @@
 # Rengaine
 
-**English** | Français
+**English** | [Français](README.fr.md)
 
 **Your music library, self-hosted.** Rengaine is a music server and web player for the albums you own: point it at a folder (or an S3 bucket) of MP3 and FLAC files, and listen from any browser or from the Android app, at home or on the go.
 
