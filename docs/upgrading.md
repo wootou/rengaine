@@ -4,8 +4,8 @@
 
 ```bash
 cd /var/www/rengaine
-git pull                                   # or unpack the new release over the old one
-cd web && npm ci && npm run build && cd .. # not needed with a release archive
+git fetch --tags && git checkout vX.Y.Z    # the new version (see CHANGELOG.md)
+cd web && npm ci && npm run build && cd .. # rebuild the web player
 M='sudo -u www-data php /var/www/rengaine/server/bin/rengaine'
 $M db:status                               # pending migrations
 $M db:migrate                              # back up the database first (below)

@@ -17,6 +17,25 @@ et l'adresse du site.
 | `[stockage]` | Où est la musique : un dossier local (`mode = "disque"`, `chemin`) ou un stockage compatible S3 (`mode = "s3"`, adresse, bucket, clés). Les clés des fichiers sont des chemins relatifs à la racine : changer de mode ne change rien dans la base. |
 | `[site] url` | Adresse publique du site. Obligatoire : elle va dans les mails, les QR codes d'appairage et les liens de télécommande, et n'est jamais déduite de la requête (un client pourrait la falsifier). |
 
+## Stockage S3
+
+Le bucket doit exister avant : Rengaine ne le crée jamais. Il n'y a pas de dossier à créer : `inbox/`
+(albums à ranger) et `corbeille/` (fichiers mis de côté, par exemple les doublons) ne sont que des
+préfixes de clés, créés par le premier objet déposé. Les requêtes utilisent l'adressage par chemin
+(`s3_url/bucket/clé`) et la signature AWS V4.
+
+Droits nécessaires à la clé d'accès sur ce bucket :
+
+| Opération | Sert à |
+|---|---|
+| `s3:ListBucket` (ListObjectsV2) | parcourir la bibliothèque et `inbox/` |
+| `s3:GetObject` (GET, GET partiel, HEAD, GET pré-signé) | écoute, analyse (FFmpeg lit une adresse pré-signée), métadonnées |
+| `s3:PutObject` | ranger les albums d'`inbox/`, mettre les doublons de côté ; aussi la cible d'une copie |
+| `s3:DeleteObject` | retirer la source après un déplacement (copie puis suppression) |
+
+Un déplacement est une copie côté serveur (`x-amz-copy-source`) suivie d'une suppression. Une clé en
+lecture seule (liste et lecture) suffit si vous n'utilisez ni `inbox/` ni la mise de côté depuis l'admin.
+
 ## Mails
 
 Sans `[smtp] hote` ni `expediteur`, Rengaine n'envoie aucun mail ; tout le reste fonctionne. Avec les mails :

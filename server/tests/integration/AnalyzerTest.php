@@ -333,6 +333,10 @@ final class AnalyzerTest extends TestCase
 
     public function testFichierAbimeSignale(): void
     {
+        // Les messages lus (« [dec:flac …] Decoding error ») sont ceux de ffmpeg 7 et suivants
+        if (preg_match('/^ffmpeg version n?(\d+)/', (string) shell_exec('ffmpeg -version 2>/dev/null'), $v) && (int) $v[1] < 7) {
+            $this->skip("ffmpeg $v[1] : la détection des fichiers abîmés demande ffmpeg 7 ou plus récent");
+        }
         // Deux copies du même FLAC de 40 s ; l'une abîmée au milieu (octets écrasés), comme les FLAC de « Tonight »
         $this->music('Groupe - Abime/01 - Sain.flac', ['album' => 'Abime', 'artist' => 'Groupe', 'title' => 'Sain', 'track' => '1'], 'a');
         $this->music('Groupe - Abime/02 - Abime.flac', ['album' => 'Abime', 'artist' => 'Groupe', 'title' => 'Abime', 'track' => '2'], 'a');

@@ -2,9 +2,11 @@
 
 This guide installs Rengaine on a Debian or Ubuntu server. It has been tested on Ubuntu 26.04 with
 PHP 8.5, MariaDB 11.8 and Apache 2.4; other recent versions should work but are not tested.
+Damaged-file detection reads the messages of FFmpeg 7 or later: with an older FFmpeg, everything else
+works but damaged files are not flagged.
 
-Rengaine needs no PHP library (no Composer) and serves a pre-built web player: Node.js is only needed
-to build that player (or use a release archive, which already contains it).
+Rengaine needs no PHP library (no Composer). The web player is built once on the server with Node.js
+(20.19 or later, or 22.12 or later): there is no pre-built archive yet.
 
 Paths used below: code in `/var/www/rengaine`, configuration in `/etc/rengaine/rengaine.ini`, logs in
 `/var/log/rengaine`, cache in `/var/cache/rengaine`. The systemd units in `deploy/systemd/` assume the
@@ -79,7 +81,8 @@ The collation makes searches insensitive to case and accents.
 ## 4. Code and configuration
 
 ```bash
-git clone https://github.com/<owner>/rengaine.git /var/www/rengaine
+git clone https://github.com/wootou/rengaine.git /var/www/rengaine
+git -C /var/www/rengaine checkout v1.0.0   # a released version (the main branch moves on)
 install -d -m 750 -o root -g www-data /etc/rengaine
 install -m 640 -o root -g www-data /var/www/rengaine/config/rengaine.ini.example /etc/rengaine/rengaine.ini
 editor /etc/rengaine/rengaine.ini          # see configuration.md
@@ -87,10 +90,12 @@ install -d -m 2750 -o www-data -g adm /var/log/rengaine
 install -d -m 750 -o www-data -g www-data /var/cache/rengaine
 ```
 
-Build the web player (skip with a release archive):
+Build the web player (required). It needs Node.js 20.19+ or 22.12+: check `node --version`, as some
+distributions ship an older one (Debian 12, Ubuntu 24.04); then install a recent Node.js from
+[nodejs.org](https://nodejs.org/) or NodeSource.
 
 ```bash
-apt-get install -y nodejs npm
+apt-get install -y nodejs npm              # if the distribution's version is recent enough
 cd /var/www/rengaine/web && npm ci && npm run build
 ```
 

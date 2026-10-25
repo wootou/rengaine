@@ -16,6 +16,25 @@ configuration with every secret masked, then tests the database, the storage and
 | `[stockage]` | Where the music lives: a local folder (`mode = "disque"`, `chemin`) or S3-compatible storage (`mode = "s3"`, endpoint, bucket, keys). Object keys are paths relative to the root, so switching modes changes nothing in the database. |
 | `[site] url` | Public address of the site. Required: it goes into emails, pairing QR codes and remote-control links, and is never guessed from the request (a client could forge it). |
 
+## S3 storage
+
+The bucket must exist beforehand; Rengaine never creates it. There are no folders to create: `inbox/`
+(albums to file) and `corbeille/` (files set aside, e.g. duplicates) are just key prefixes, created by
+the first object put there. Requests use path-style addressing (`s3_url/bucket/key`) with AWS
+Signature V4.
+
+Permissions the access key needs on that bucket:
+
+| Operation | Used for |
+|---|---|
+| `s3:ListBucket` (ListObjectsV2) | scanning the library and `inbox/` |
+| `s3:GetObject` (GET, ranged GET, HEAD, pre-signed GET) | streaming, analysis (FFmpeg reads a pre-signed URL), metadata |
+| `s3:PutObject` | filing albums from `inbox/`, setting duplicates aside; also the target of a copy |
+| `s3:DeleteObject` | removing the source after a move (copy then delete) |
+
+A move is a server-side copy (`x-amz-copy-source`) followed by a delete. A read-only key (list and get)
+is enough if you never use `inbox/` nor set files aside from the admin.
+
 ## Mail
 
 Without `[smtp] hote` and `expediteur`, Rengaine sends no mail at all; everything else works. With mail:

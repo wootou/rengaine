@@ -2,9 +2,12 @@
 
 Ce guide installe Rengaine sur un serveur Debian ou Ubuntu. Il a été testé sur Ubuntu 26.04 avec PHP 8.5,
 MariaDB 11.8 et Apache 2.4 ; d'autres versions récentes devraient convenir, mais ne sont pas testées.
+La détection des fichiers abîmés lit les messages de FFmpeg 7 ou plus récent : avec un FFmpeg plus ancien,
+tout le reste fonctionne, mais les fichiers abîmés ne sont pas signalés.
 
-Rengaine n'utilise aucune bibliothèque PHP (pas de Composer) et sert un lecteur web déjà construit :
-Node.js ne sert qu'à construire ce lecteur (une archive de version le contient déjà).
+Rengaine n'utilise aucune bibliothèque PHP (pas de Composer). Le lecteur web se construit une fois sur le
+serveur avec Node.js (20.19 ou plus récent, ou 22.12 ou plus récent) : il n'existe pas encore d'archive
+déjà construite.
 
 Chemins utilisés : le code dans `/var/www/rengaine`, la configuration dans `/etc/rengaine/rengaine.ini`, les
 journaux dans `/var/log/rengaine`, le cache dans `/var/cache/rengaine`. Les unités systemd de
@@ -79,7 +82,8 @@ La collation rend les recherches insensibles à la casse et aux accents.
 ## 4. Code et configuration
 
 ```bash
-git clone https://github.com/<compte>/rengaine.git /var/www/rengaine
+git clone https://github.com/wootou/rengaine.git /var/www/rengaine
+git -C /var/www/rengaine checkout v1.0.0   # une version publiée (la branche main continue d'avancer)
 install -d -m 750 -o root -g www-data /etc/rengaine
 install -m 640 -o root -g www-data /var/www/rengaine/config/rengaine.ini.example /etc/rengaine/rengaine.ini
 editor /etc/rengaine/rengaine.ini          # voir configuration.md
@@ -87,10 +91,12 @@ install -d -m 2750 -o www-data -g adm /var/log/rengaine
 install -d -m 750 -o www-data -g www-data /var/cache/rengaine
 ```
 
-Construire le lecteur web (inutile avec une archive de version) :
+Construire le lecteur web (obligatoire). Il faut Node.js 20.19+ ou 22.12+ : vérifiez `node --version`,
+certaines distributions en livrent un plus ancien (Debian 12, Ubuntu 24.04) ; installez alors un Node.js
+récent depuis [nodejs.org](https://nodejs.org/) ou NodeSource.
 
 ```bash
-apt-get install -y nodejs npm
+apt-get install -y nodejs npm              # si la version de la distribution est assez récente
 cd /var/www/rengaine/web && npm ci && npm run build
 ```
 
@@ -173,8 +179,56 @@ chown root:mercure /etc/mercure/mercure.env && chmod 640 /etc/mercure/mercure.en
 # Recopiez les quatre mêmes valeurs dans la section [mercure] de rengaine.ini, puis : unset PK SK
 ```
 
-Le fichier `/etc/mercure/Caddyfile` et l'unité `/etc/systemd/system/mercure.service` sont ceux de la
-[version anglaise](../installation.md#8-optional-real-time-hub-shared-remote-control), sans changement.
+`/etc/mercure/Caddyfile` (le hub n'écoute que sur la machine elle-même) :
+
+```caddyfile
+{
+	auto_https off
+	admin off
+	persist_config off
+	grace_period 3s
+}
+http://127.0.0.1:3700 {
+	bind 127.0.0.1
+	mercure {
+		issuer {$MERCURE_ISSUER} {
+			publisher {
+				jwt {env.MERCURE_PUBLISHER_JWT_KEY} HS256
+			}
+			subscriber {
+				jwt {env.MERCURE_SUBSCRIBER_JWT_KEY} HS256
+			}
+		}
+		resource_identifier {$MERCURE_RESOURCE}
+	}
+	respond "Not Found" 404
+}
+```
+
+`/etc/systemd/system/mercure.service` :
+
+```ini
+[Unit]
+Description=Hub Mercure (temps réel de Rengaine)
+After=network.target
+
+[Service]
+User=mercure
+Group=mercure
+EnvironmentFile=/etc/mercure/mercure.env
+Environment=XDG_CONFIG_HOME=/var/lib/mercure XDG_DATA_HOME=/var/lib/mercure
+StateDirectory=mercure
+ExecStart=/usr/local/bin/mercure run --config /etc/mercure/Caddyfile --adapter caddyfile
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
 Ensuite `systemctl daemon-reload && systemctl enable --now mercure`. L'exemple de vhost relaie déjà
 `/.well-known/mercure` (abonnements seulement). Un proxy placé devant ne doit pas retenir
 `text/event-stream` et doit garder les connexions ouvertes au moins une minute.

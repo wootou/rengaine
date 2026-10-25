@@ -4,8 +4,8 @@
 
 ```bash
 cd /var/www/rengaine
-git pull                                   # ou décompresser la nouvelle version par-dessus l'ancienne
-cd web && npm ci && npm run build && cd .. # inutile avec une archive de version
+git fetch --tags && git checkout vX.Y.Z    # la nouvelle version (voir CHANGELOG.md)
+cd web && npm ci && npm run build && cd .. # reconstruire le lecteur web
 M='sudo -u www-data php /var/www/rengaine/server/bin/rengaine'
 $M db:status                               # migrations en attente
 $M db:migrate                              # sauvegardez la base avant (voir plus bas)

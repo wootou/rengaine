@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 DEST=${RENGAINE_DEST:-rengaine-org:/var/www/rengaine/}
 
 [ -s ../api/site/index.html ] || sh ../api/doc.sh
-node build.mjs
+REPO_URL=${REPO_URL:-https://github.com/wootou/rengaine} node build.mjs
 
 # Rien d'inachevé ni de manquant
 if grep -rl -e '\[À COMPLÉTER\]' -e '\[TO BE COMPLETED\]' dist >/dev/null; then
