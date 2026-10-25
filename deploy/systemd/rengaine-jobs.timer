@@ -1,0 +1,10 @@
+[Unit]
+Description=Rengaine — regarde chaque minute s'il y a une tâche demandée depuis l'admin
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

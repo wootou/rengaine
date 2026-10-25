@@ -1,0 +1,12 @@
+{
+  "name": "rengaine-website",
+  "private": true,
+  "description": "Static public site of Rengaine (GitHub Pages), built from docs/",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "marked": "18.1.0"
+  }
+}

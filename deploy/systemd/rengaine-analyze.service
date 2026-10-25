@@ -1,0 +1,20 @@
+[Unit]
+Description=Rengaine — analyse audio des pistes en file (volume, silences, empreinte)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+ExecStart=/usr/bin/php /var/www/rengaine/server/bin/rengaine analyze
+# Code 3 = passage terminé avec des pistes en erreur (visibles dans l'admin) : pas un échec du service
+SuccessExitStatus=3
+# Tâche longue (première analyse d'une grosse bibliothèque) : le site passe avant
+Nice=15
+CPUWeight=20
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes

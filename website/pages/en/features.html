@@ -1,0 +1,80 @@
+<article class="page">
+<h1>Features</h1>
+<p class="lead">What Rengaine does, from your files to your ears.</p>
+
+<section class="feature">
+  <div>
+    <h2>A library that files itself</h2>
+    <p>Rengaine reads a folder or an S3 bucket and never modifies your files. One folder is one album; title,
+    artist and year are voted from the tracks' tags. An MP3 and a FLAC of the same song are one track, and the
+    lossless one is played.</p>
+    <p>Drop a new album in the <code>inbox/</code> folder: it is filed under a clean name
+    (<code>Artist/Album (year)/01 - Title.flac</code>). Covers, genres, years: every correction is kept,
+    survives rescans and can be undone.</p>
+  </div>
+  {{shot:album|An album page: cover, details, track list with durations}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Careful sound</h2>
+    <p>Every track is measured: volume is normalised (per track or per album), leading and trailing silences
+    are skipped. When the tempo is known, the cross-fade lasts whole bars and lines up the beats, like a DJ.</p>
+    <p>On a phone or a slow connection, a lighter Opus version is converted on the fly, with one setting for
+    wifi and one for mobile data.</p>
+  </div>
+  {{shot:settings|Sound settings: volume normalisation, cross-fade and stream quality}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Endless listening</h2>
+    <p>Explore by genre and sub-genre, by mood (calm, focus, energetic, dance), by decade or by collection,
+    and start a shuffle that never stops.</p>
+    <p>Continuous play picks tracks that follow the last one well: key, tempo, favourites, no recent repeats,
+    artists spaced out.</p>
+  </div>
+  {{shot:explore|The Explore page: genres, moods and decades}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>For the whole household</h2>
+    <p>Every account has its own queue, favourites, playlists, history and settings. The queue follows you
+    from one device to another: started on the computer, it continues on the phone.</p>
+    <p>Account requests are approved by an admin; everyone sees their connected devices and can sign them out.</p>
+  </div>
+  {{shot:queue|The queue open next to the player, with the current track}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>A remote control to share</h2>
+    <p>At a party, send your guests a link. From their phone, without an account, they add songs, reorder,
+    pause or turn the volume up, depending on the rights you chose. The link expires on its own, and you can
+    revoke it at any time.</p>
+  </div>
+  {{shot:remote-phone|A guest's remote control on a phone: the current track and what comes next}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>AI proposes, you decide</h2>
+    <p>A large library has messy genres, missing years, artists spelled two ways. Rengaine has an MCP server:
+    any compatible client can read the library and <strong>propose</strong> corrections, grouped in batches.</p>
+    <p>Nothing changes until you apply a batch, and every batch can be reverted. With an API key, or a local
+    model, the request can also start from the admin.</p>
+  </div>
+  {{shot:proposals|The proposals screen: a batch of changes proposed by an AI, to apply or reject}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Yours, and private</h2>
+    <p>No tracker, no font or script loaded from elsewhere, no external call you did not configure. IP
+    addresses are erased after a configurable delay. Everyone can download their data, delete their listening
+    history and delete their account.</p>
+  </div>
+  {{shot:history|The listening history, by day, with one play or the whole history to delete}}
+</section>
+</article>

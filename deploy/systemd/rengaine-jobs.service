@@ -1,0 +1,16 @@
+[Unit]
+Description=Rengaine — tâches demandées depuis l'admin (indexation, analyse, reprise des genres)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+ExecStart=/usr/bin/php /var/www/rengaine/server/bin/rengaine jobs:run
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes

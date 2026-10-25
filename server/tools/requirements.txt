@@ -1,0 +1,6 @@
+# Environnement Python de l'analyse audio (AUD-03, AUD-04) : /opt/rengaine-analyse
+# Versions figées, installées avec : /opt/rengaine-analyse/bin/pip install -r server/tools/requirements.txt
+essentia==2.1b6.dev1438
+numpy==2.5.4
+PyYAML==6.0.3
+six==1.17.0

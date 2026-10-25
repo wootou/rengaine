@@ -1,0 +1,5136 @@
+openapi: 3.1.0
+
+info:
+  title: API Rengaine
+  version: 2.27.0
+  summary: Bibliothèque musicale, lecture, comptes et administration.
+  license:
+    name: Usage privé
+  description: |
+    Contrat de l'API **v2**, seule API du nouveau lecteur musique. Le lecteur web, l'appli
+    téléphone et l'agent Claude en sont les clients. Ce fichier fait référence : le code de
+    l'API et les types du lecteur web en découlent (types générés, jamais écrits à la main).
+
+    **Figé le 2026-10-19** (validé par Rémy, tâche CAD-02). Toute évolution passe d'abord par ce
+    fichier : ajout compatible → version mineure (2.1.0) ; changement incompatible → accord de
+    l'agent de l'appli et version majeure.
+
+    ## Conventions
+    - JSON en UTF-8, noms de champs en camelCase.
+    - Identifiants : entiers. Ils sont stables : l'indexeur met à jour les lignes au lieu de les
+      recréer, et un fichier renommé garde l'identifiant de sa piste.
+    - Dates : ISO 8601 en UTC (`2026-10-19T08:30:00.000Z`). Durées en **millisecondes**.
+    - Volume : LUFS (EBU R128) et dBTP. Le serveur donne la **mesure** ; le client calcule le
+      gain avec la cible choisie dans les réglages (`gain = cible - mesure`, borné par la crête).
+    - Listes paginées : `limit` et `offset` en entrée ; `items`, `total`, `limit` et `offset` en sortie.
+    - Les URL renvoyées (`streamUrl`, `coverUrl`) sont des chemins relatifs à la racine du serveur.
+    - Chaque réponse porte un en-tête `X-Request-Id` ; il figure aussi dans les erreurs et dans
+      les journaux du serveur, pour retrouver une requête.
+    - Champ `x-priority` : P1 (première version), P2, P3. Une opération P2 ou P3 pas encore
+      codée répond `501 not_implemented`.
+    - Champ `x-roles` : rôles autorisés (`admin`, `user`, `agent`). Absent = comptes `admin` et `user`.
+      L'**agent** (Claude, IA-01) n'a accès qu'aux opérations qui le citent : lecture du catalogue, de
+      la bibliothèque côté admin, et propositions de lots. Ni écoute, ni données d'un compte (réglages,
+      file, favoris, playlists, historique, télécommande), ni appairage : `403 forbidden` ailleurs.
+
+    ## Authentification
+    - **Lecteur web** : cookie de session `musique_session` (HttpOnly, Secure, SameSite=Strict),
+      posé par `POST /auth/login`. Toute requête qui modifie quelque chose (POST, PUT, PATCH,
+      DELETE) doit en plus porter l'en-tête `X-CSRF-Token`, dont la valeur est renvoyée par
+      `POST /auth/login` et `GET /me`.
+    - **Appli et agent** : en-tête `Authorization: Bearer <jeton>`. Un jeton par appareil, visible
+      et révocable dans les réglages. L'appli obtient le sien par identifiant et mot de passe, ou
+      en scannant un QR (`POST /me/pairing-codes` puis `POST /auth/pair`).
+    - Un jeton n'apparaît qu'une fois, dans la réponse qui le crée. Le serveur n'en garde que
+      l'empreinte.
+
+    ## Erreurs
+    Toujours le même format (`Error`), avec un `code` stable que le client peut tester.
+    `429` porte un en-tête `Retry-After`.
+
+servers:
+  - url: /api/v2
+    description: Le serveur Rengaine qui sert cette page
+  - url: "{serveur}/api/v2"
+    description: Un serveur Rengaine
+    variables:
+      serveur:
+        default: https://musique.example.org
+        description: Adresse publique du serveur ([site] url)
+
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+
+tags:
+  - name: serveur
+    description: Découverte, état du serveur
+  - name: authentification
+    description: Connexion, demande de compte, mot de passe, appairage
+  - name: compte
+    description: Le compte connecté, ses appareils et ses réglages
+  - name: catalogue
+    description: Albums, artistes, pistes, genres, recherche
+  - name: lecture
+    description: Flux audio, images, file d'attente, favoris, historique, lecture continue
+  - name: playlists
+    description: Playlists des comptes (privées, ou partagées avec tous les comptes)
+  - name: telecommande
+    description: "Télécommande partagée (FUT-02) : un lien donné à un invité pour piloter la file"
+  - name: admin-comptes
+    description: Gestion des comptes et des jetons, réglages du serveur, images de fond (admin)
+  - name: admin-bibliotheque
+    description: Corrections et réorganisation de la bibliothèque (admin, agent)
+  - name: admin-taches
+    description: Tâches de fond et journaux (admin)
+  - name: mcp
+    description: Serveur MCP pour l'agent Claude (IA-03)
+
+paths:
+
+  # ===========================================================================
+  # Serveur
+  # ===========================================================================
+
+  /server:
+    get:
+      tags: [serveur]
+      operationId: getServer
+      summary: Informations et capacités du serveur
+      description: |
+        Sans authentification. Permet à un client de vérifier l'adresse saisie et de savoir
+        quelles fonctions sont disponibles avant toute connexion.
+      security: []
+      x-priority: P1
+      responses:
+        "200":
+          description: Informations du serveur
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServerInfo"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  # ===========================================================================
+  # Authentification
+  # ===========================================================================
+
+  /auth/login:
+    post:
+      tags: [authentification]
+      operationId: login
+      summary: Connexion par e-mail et mot de passe
+      description: |
+        - `client: web` : pose le cookie de session et renvoie le jeton anti-CSRF.
+        - `client: app` : crée un jeton d'appareil et le renvoie (une seule fois).
+
+        Les échecs sont comptés par compte **et par réseau** (IPv4, ou /64 en IPv6) : après 5 échecs, le
+        compte est refusé 15 minutes **depuis ce réseau seulement**, avec la même réponse qu'un mauvais
+        mot de passe (`401 invalid_credentials`), qui ne dit pas si le compte existe. Depuis un autre
+        réseau, le titulaire se connecte normalement. L'adresse IP est signalée au journal de sécurité
+        (fail2ban). Jusqu'à la version 2.24.0, le compte entier était verrouillé, avec `423`.
+        **Limite** : `connexions_par_10min` par réseau.
+        Un compte en attente d'approbation reçoit `403 account_pending`.
+      security: []
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/LoginRequest"}
+      responses:
+        "200":
+          description: Connecté
+          headers:
+            Set-Cookie:
+              description: "Seulement pour `client: web`"
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LoginResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /auth/logout:
+    post:
+      tags: [authentification]
+      operationId: logout
+      x-roles: [admin, user, agent]
+      summary: Déconnexion (révoque la session ou le jeton utilisé)
+      x-priority: P1
+      responses:
+        "204": {description: Déconnecté}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /auth/register:
+    post:
+      tags: [authentification]
+      operationId: register
+      summary: Demande de compte
+      description: |
+        Crée un compte **en attente**. L'admin reçoit un e-mail (adresse `[smtp] admin` de la config,
+        sinon chaque admin actif) et approuve ou refuse la demande dans l'interface admin. La réponse est la même que l'adresse soit déjà connue ou non, pour
+        ne pas révéler quels comptes existent.
+        `403 registration_closed` si les inscriptions sont fermées.
+
+        **Limite** : au plus 2 demandes en attente par adresse IPv4 publique, et 2 par préfixe
+        IPv6 /64 (réglable : `pendingRequestsPerNetwork`). Au-delà : `429 pending_limit`, jusqu'à
+        ce que l'admin traite une demande. L'IP est celle du client transmise par le proxy,
+        et elle est effacée une fois la demande traitée.
+      security: []
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RegisterRequest"}
+      responses:
+        "202":
+          description: Demande enregistrée, en attente d'approbation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AcceptedResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /auth/password/forgot:
+    post:
+      tags: [authentification]
+      operationId: forgotPassword
+      summary: Demande de réinitialisation du mot de passe
+      description: |
+        Envoie un lien par e-mail, valable **1 heure** et à usage unique. Réponse identique que
+        l'adresse existe ou non. Seul un compte actif avec mot de passe reçoit un lien (pas un compte
+        en attente, suspendu ou agent), et au plus 3 liens par heure et par compte.
+        Le lien porte le jeton dans le fragment, `<site>/mot-de-passe#jeton=…` : il n'est jamais envoyé
+        au serveur, donc absent des journaux d'accès. Le client le lit, l'efface de l'adresse et le passe
+        à `POST /auth/password/reset`. (Avant la version 2.25.0 : `?jeton=…`.)
+        **Limite** : `oublis_mdp_par_heure` par réseau (10 par défaut).
+      security: []
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: {type: string, format: email}
+      responses:
+        "202":
+          description: Demande prise en compte
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AcceptedResponse"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /auth/password/reset:
+    post:
+      tags: [authentification]
+      operationId: resetPassword
+      summary: Nouveau mot de passe à partir du lien reçu par e-mail
+      description: |
+        Révoque toutes les sessions et tous les jetons du compte, lève les verrous après échecs,
+        et invalide les autres liens. Un e-mail confirme le changement.
+        `400 invalid_token` si le lien est inconnu, expiré ou déjà utilisé.
+      security: []
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: {type: string}
+                newPassword: {$ref: "#/components/schemas/Password"}
+      responses:
+        "204": {description: Mot de passe changé}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /auth/pair:
+    post:
+      tags: [authentification]
+      operationId: pairDevice
+      summary: Échange d'un code d'appairage (QR) contre un jeton d'appareil
+      description: |
+        Le code est à usage unique et expire après quelques minutes. Il ne donne aucun accès
+        par lui-même : seule cette opération le convertit en jeton.
+      security: []
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, deviceName]
+              properties:
+                code: {type: string, examples: ["K7QF-2M9X"]}
+                deviceName: {$ref: "#/components/schemas/DeviceName"}
+      responses:
+        "200":
+          description: Appareil appairé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  # ===========================================================================
+  # Compte connecté
+  # ===========================================================================
+
+  /me:
+    get:
+      tags: [compte]
+      operationId: getMe
+      x-roles: [admin, user, agent]
+      summary: Le compte connecté
+      x-priority: P1
+      responses:
+        "200":
+          description: Compte
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MeResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    patch:
+      tags: [compte]
+      operationId: updateMe
+      summary: Modifier son nom affiché
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                displayName: {$ref: "#/components/schemas/DisplayName"}
+      responses:
+        "200":
+          description: Compte modifié
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/User"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    delete:
+      tags: [compte]
+      operationId: deleteMe
+      summary: Supprimer son compte, tout de suite et définitivement
+      description: |
+        Efface **immédiatement** le compte et tout ce qui lui appartient : profil, réglages, file
+        d'attente, favoris, playlists, historique d'écoute, sessions et jetons (tous les appareils sont
+        déconnectés), codes d'appairage, liens de télécommande, mails en attente, entrées du journal
+        d'audit qu'il a faites. Rien n'est récupérable. Les corrections de la bibliothèque faites par un
+        admin restent (elles servent à tous) ; leur auteur devient « Compte supprimé » (`UserRef.id` 0).
+
+        **Délai d'annulation (obligatoire pour les clients)** : après la confirmation, le client laisse
+        **15 secondes** à l'utilisateur pour annuler (compte à rebours visible et bouton « Annuler »),
+        puis seulement envoie la requête. Quitter l'écran pendant ce délai annule. Le serveur, lui,
+        supprime dès réception.
+
+        Le mot de passe est redemandé. Refusé au dernier compte admin actif (`409 last_admin`). Un
+        agent n'a pas cette opération (son compte est géré par l'admin). Une session web reçoit un
+        cookie effacé. Tentatives limitées comme le changement de mot de passe (`429`).
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: {type: string, maxLength: 200}
+      responses:
+        "204": {description: Compte supprimé}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /me/export:
+    get:
+      tags: [compte]
+      operationId: exportMyData
+      summary: Télécharger toutes ses données (RGPD)
+      description: |
+        Tout ce que le serveur garde sur le compte, dans un seul fichier JSON lisible : profil, réglages,
+        file d'attente, favoris, playlists (avec leurs pistes), historique d'écoute complet, appareils
+        et sessions (y compris révoqués, avec dernière IP et navigateur), liens de télécommande. Chaque
+        piste est décrite par son titre, son artiste et son album, pour rester lisible hors de Rengaine
+        (`track` null si la piste n'existe plus). Jamais de secret : ni mot de passe, ni jeton.
+
+        Réponse en `Content-Disposition: attachment; filename="rengaine-export-AAAAMMJJ.json"`.
+        Au plus 10 exports par heure et par compte (`429`). Un agent n'a pas cette opération.
+      x-priority: P2
+      responses:
+        "200":
+          description: Les données du compte
+          headers:
+            Content-Disposition:
+              schema: {type: string, examples: ['attachment; filename="rengaine-export-20261024.json"']}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MyDataExport"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /me/password:
+    post:
+      tags: [compte]
+      operationId: changePassword
+      summary: Changer son mot de passe
+      description: |
+        Révoque les autres sessions et jetons, sauf celui qui fait la demande. Un e-mail prévient
+        le titulaire du compte (si le serveur envoie des mails).
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: {type: string}
+                newPassword: {$ref: "#/components/schemas/Password"}
+      responses:
+        "204": {description: Mot de passe changé}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /me/devices:
+    get:
+      tags: [compte]
+      operationId: listMyDevices
+      summary: Sessions et appareils du compte
+      x-priority: P1
+      responses:
+        "200":
+          description: Liste des sessions et jetons actifs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/Device"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /me/devices/{tokenId}:
+    parameters:
+      - $ref: "#/components/parameters/TokenId"
+    delete:
+      tags: [compte]
+      operationId: revokeMyDevice
+      summary: Révoquer une session ou un appareil
+      x-priority: P1
+      responses:
+        "204": {description: Révoqué}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /me/pairing-codes:
+    post:
+      tags: [compte]
+      operationId: createPairingCode
+      summary: Créer un code d'appairage pour l'appli (affiché en QR)
+      description: |
+        Le QR est dessiné par le client à partir de `qrPayload`. Le serveur n'écrit jamais
+        d'image, et le code ne vaut rien une fois utilisé ou expiré.
+      x-priority: P1
+      responses:
+        "201":
+          description: Code créé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PairingCode"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /me/settings:
+    get:
+      tags: [compte]
+      operationId: getMySettings
+      summary: Réglages de l'utilisateur (partagés entre le site et l'appli)
+      description: |
+        Un compte qui n'a jamais rien réglé reçoit les valeurs par défaut. L'en-tête `ETag`
+        contient la version, à renvoyer dans `If-Match` lors de l'enregistrement.
+      x-priority: P1
+      responses:
+        "200":
+          description: Réglages
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserSettingsDocument"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    put:
+      tags: [compte]
+      operationId: putMySettings
+      summary: Enregistrer les réglages
+      description: |
+        Remplace l'ensemble des réglages. Si un autre appareil a enregistré entre-temps,
+        la réponse est `412` avec la version actuelle : le client fusionne puis réessaie.
+      x-priority: P1
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UserSettings"}
+      responses:
+        "200":
+          description: Réglages enregistrés
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserSettingsDocument"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "412": {$ref: "#/components/responses/PreconditionFailed"}
+        "428": {$ref: "#/components/responses/PreconditionRequired"}
+
+  /me/queue:
+    get:
+      tags: [lecture]
+      operationId: getMyQueue
+      summary: File d'attente enregistrée (reprise sur un autre appareil)
+      x-priority: P1
+      responses:
+        "200":
+          description: File d'attente, pistes comprises
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlayQueue"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    put:
+      tags: [lecture]
+      operationId: putMyQueue
+      summary: Enregistrer la file d'attente
+      description: |
+        Le client l'envoie quand la file change, et de temps en temps pendant la lecture pour la
+        position. Même règle de version que les réglages (`If-Match`, `412`).
+      x-priority: P1
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PlayQueueInput"}
+      responses:
+        "200":
+          description: File enregistrée
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlayQueue"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "412": {$ref: "#/components/responses/PreconditionFailed"}
+        "428": {$ref: "#/components/responses/PreconditionRequired"}
+
+  /me/favorites:
+    get:
+      tags: [lecture]
+      operationId: listMyFavorites
+      summary: Favoris
+      x-priority: P2
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: {$ref: "#/components/schemas/FavoriteType"}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Favoris du type demandé, du plus récent au plus ancien
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/FavoritePage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /me/favorites/{type}/{id}:
+    parameters:
+      - name: type
+        in: path
+        required: true
+        schema: {$ref: "#/components/schemas/FavoriteType"}
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [lecture]
+      operationId: addFavorite
+      summary: Ajouter aux favoris (sans effet si déjà présent)
+      x-priority: P2
+      responses:
+        "204": {description: Ajouté}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [lecture]
+      operationId: removeFavorite
+      summary: Retirer des favoris (sans effet si absent)
+      x-priority: P2
+      responses:
+        "204": {description: Retiré}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /playlists:
+    get:
+      tags: [playlists]
+      operationId: listPlaylists
+      summary: Mes playlists et celles que les autres comptes partagent
+      description: |
+        Une playlist est privée par défaut. Partagée (`shared`), tous les comptes la voient et
+        l'écoutent, mais seul son créateur la modifie ; les autres peuvent la copier
+        (`POST /playlists` avec ses `trackIds`).
+      x-priority: P2
+      parameters:
+        - name: scope
+          in: query
+          description: "`mine` : les miennes ; `shared` : celles partagées par les autres ; `all` (défaut) : les deux"
+          schema: {type: string, enum: [all, mine, shared], default: all}
+      responses:
+        "200":
+          description: Playlists, les plus récemment modifiées d'abord
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/PlaylistSummary"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    post:
+      tags: [playlists]
+      operationId: createPlaylist
+      summary: Créer une playlist (vide, ou avec des pistes)
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PlaylistInput"}
+      responses:
+        "201":
+          description: Playlist créée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaylistDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /playlists/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [playlists]
+      operationId: getPlaylist
+      summary: Une playlist et ses pistes, dans l'ordre
+      description: "`404` si elle n'existe pas ou si elle est privée à un autre compte."
+      x-priority: P2
+      responses:
+        "200":
+          description: Playlist
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaylistDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [playlists]
+      operationId: updatePlaylist
+      summary: Renommer, décrire, partager ou non (créateur seulement)
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: {type: string, minLength: 1, maxLength: 200}
+                description: {type: [string, "null"], maxLength: 1000}
+                shared: {type: boolean}
+      responses:
+        "200":
+          description: Playlist modifiée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaylistDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [playlists]
+      operationId: deletePlaylist
+      summary: Supprimer la playlist (créateur seulement ; les pistes restent dans la bibliothèque)
+      x-priority: P2
+      responses:
+        "204": {description: Supprimée}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /playlists/{id}/items:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [playlists]
+      operationId: addPlaylistItems
+      summary: Ajouter des pistes (à la fin, ou à une position)
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [trackIds]
+              properties:
+                trackIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 5000
+                  items: {type: integer}
+                position:
+                  type: integer
+                  minimum: 0
+                  description: Insérer avant l'entrée à cette position ; absent = à la fin
+      responses:
+        "200":
+          description: Playlist modifiée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaylistDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409":
+          description: La playlist dépasserait 5000 pistes
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+    put:
+      tags: [playlists]
+      operationId: reorderPlaylistItems
+      summary: Nouvel ordre des entrées (toutes, chacune une fois)
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemIds]
+              properties:
+                itemIds:
+                  type: array
+                  maxItems: 5000
+                  items: {type: integer}
+      responses:
+        "200":
+          description: Playlist réordonnée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaylistDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /playlists/{id}/items/{itemId}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - name: itemId
+        in: path
+        required: true
+        schema: {type: integer}
+    delete:
+      tags: [playlists]
+      operationId: removePlaylistItem
+      summary: Retirer une entrée de la playlist
+      x-priority: P2
+      responses:
+        "200":
+          description: Playlist modifiée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaylistDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /me/history:
+    get:
+      tags: [lecture]
+      operationId: listMyHistory
+      summary: Historique d'écoute
+      x-priority: P2
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Écoutes, de la plus récente à la plus ancienne
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlayHistoryPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    post:
+      tags: [lecture]
+      operationId: recordPlays
+      summary: Enregistrer des écoutes
+      description: |
+        Par lot : l'appli peut accumuler les écoutes hors connexion et les envoyer plus tard.
+        Une écoute est envoyée quand la piste se termine ou qu'on la quitte.
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plays]
+              properties:
+                plays:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: {$ref: "#/components/schemas/PlayInput"}
+      responses:
+        "204": {description: Enregistré}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    delete:
+      tags: [lecture]
+      operationId: clearMyHistory
+      summary: Effacer tout son historique d'écoute
+      description: |
+        Efface définitivement toutes les écoutes du compte (depuis 2.26.0). Les favoris, playlists et
+        réglages ne changent pas. Noté au journal d'audit, sans le détail des écoutes.
+      x-priority: P2
+      responses:
+        "200":
+          description: Historique effacé
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: {type: integer, description: Nombre d'écoutes effacées}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /me/history/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    delete:
+      tags: [lecture]
+      operationId: deleteMyPlay
+      summary: Effacer une écoute de son historique
+      description: Définitif (depuis 2.26.0). `404` si l'écoute n'existe pas ou appartient à un autre compte.
+      x-priority: P2
+      responses:
+        "204": {description: Écoute effacée}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  # ===========================================================================
+  # Catalogue
+  # ===========================================================================
+
+  /albums:
+    get:
+      tags: [catalogue]
+      operationId: listAlbums
+      x-roles: [admin, user, agent]
+      summary: Liste des albums, filtrée et triée
+      x-priority: P1
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - name: genre
+          in: query
+          description: Identifiants de genre ; un album correspond s'il a l'un d'eux. Un genre parent comprend ses sous-genres (CAT-08).
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {type: integer}
+          examples:
+            plusieurs: {value: [3, 12]}
+        - name: artist
+          in: query
+          description: Identifiant de l'artiste de l'album
+          schema: {type: integer}
+        - name: collection
+          in: query
+          schema: {type: integer}
+        - name: yearFrom
+          in: query
+          schema: {type: integer}
+        - name: yearTo
+          in: query
+          schema: {type: integer}
+        - name: lossless
+          in: query
+          description: "`true` = seulement les albums disponibles sans perte"
+          schema: {type: boolean}
+        - name: favorite
+          in: query
+          description: "`true` = seulement les albums favoris"
+          schema: {type: boolean}
+        - name: sort
+          in: query
+          description: |
+            `name` (tri naturel), `added` (ajouts récents), `year`, `artist`, `random`.
+            Avec `random`, passer le même `seed` d'une page à l'autre pour garder le même ordre.
+          schema:
+            type: string
+            enum: [name, added, year, artist, random]
+            default: name
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/Seed"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page d'albums
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AlbumPage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /albums/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [catalogue]
+      operationId: getAlbum
+      x-roles: [admin, user, agent]
+      summary: Un album et ses pistes
+      x-priority: P1
+      responses:
+        "200":
+          description: Album
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AlbumDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /artists:
+    get:
+      tags: [catalogue]
+      operationId: listArtists
+      x-roles: [admin, user, agent]
+      summary: Liste des artistes
+      x-priority: P1
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, albumCount, added]
+            default: name
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page d'artistes
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ArtistPage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /artists/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [catalogue]
+      operationId: getArtist
+      x-roles: [admin, user, agent]
+      summary: Un artiste, ses albums et les albums où il apparaît
+      x-priority: P1
+      responses:
+        "200":
+          description: Artiste
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ArtistDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /tracks:
+    get:
+      tags: [catalogue]
+      operationId: listTracks
+      x-roles: [admin, user, agent]
+      summary: Recherche de pistes, avec les filtres « DJ » (BPM, clé)
+      x-priority: P1
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - name: album
+          in: query
+          schema: {type: integer}
+        - name: artist
+          in: query
+          description: Pistes où l'artiste est principal ou invité
+          schema: {type: integer}
+        - name: genre
+          in: query
+          description: Genres effectifs de la piste (les siens, sinon ceux de l'album)
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {type: integer}
+        - name: bpmMin
+          in: query
+          schema: {type: number, minimum: 0}
+        - name: bpmMax
+          in: query
+          schema: {type: number, minimum: 0}
+        - name: camelot
+          in: query
+          description: Clés en notation Camelot (`8A`, `9B`…)
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {$ref: "#/components/schemas/Camelot"}
+        - name: favorite
+          in: query
+          schema: {type: boolean}
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, added, bpm, duration, random]
+            default: name
+        - $ref: "#/components/parameters/Order"
+        - $ref: "#/components/parameters/Seed"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page de pistes
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TrackPage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /tracks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [catalogue]
+      operationId: getTrack
+      x-roles: [admin, user, agent]
+      summary: Une piste
+      x-priority: P1
+      responses:
+        "200":
+          description: Piste
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Track"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /tracks/{id}/waveform:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [lecture]
+      operationId: getTrackWaveform
+      summary: Forme d'onde de la piste (AUD-07)
+      description: |
+        Niveau sonore (RMS) par tranche régulière, relevé avec la mesure du volume ; environ 800
+        tranches par piste. `404` tant que la piste n'est pas mesurée. Réponse avec `ETag` : une
+        requête `If-None-Match` répond `304` si rien n'a changé.
+      x-priority: P3
+      responses:
+        "200":
+          description: Forme d'onde
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Waveform"}
+        "304":
+          description: Inchangée depuis la version que le client a déjà
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /genres:
+    get:
+      tags: [catalogue]
+      operationId: listGenres
+      x-roles: [admin, user, agent]
+      summary: Tous les genres, avec le nombre d'albums
+      description: Liste courte, non paginée.
+      x-priority: P1
+      responses:
+        "200":
+          description: Genres, triés par nom
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/Genre"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /collections:
+    get:
+      tags: [catalogue]
+      operationId: listCollections
+      x-roles: [admin, user, agent]
+      summary: Collections d'albums (CAT-08)
+      description: |
+        Organisation au-delà du genre (CAT-08). Les collections (`kind=collection`) sont créées par
+        l'admin et visibles de tous. Les ambiances sont calculées (`GET /moods`), pas stockées ici.
+      x-priority: P2
+      parameters:
+        - name: kind
+          in: query
+          schema: {$ref: "#/components/schemas/CollectionKind"}
+      responses:
+        "200":
+          description: Collections
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/Collection"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /collections/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [catalogue]
+      operationId: getCollection
+      x-roles: [admin, user, agent]
+      summary: Une collection et ses albums, dans l'ordre choisi par l'admin
+      x-priority: P2
+      responses:
+        "200":
+          description: Collection
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CollectionDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /moods:
+    get:
+      tags: [catalogue]
+      operationId: listMoods
+      x-roles: [admin, user, agent]
+      summary: Ambiances calculées (CAT-08)
+      description: |
+        Déduites de l'énergie, de la dansabilité et du tempo mesurés (AUD-03, AUD-06), sans rien
+        saisir. Liste vide si le serveur ne mesure pas l'énergie (`features.analysis.energy`).
+        Une piste peut être dans plusieurs ambiances, ou dans aucune.
+      x-priority: P2
+      responses:
+        "200":
+          description: Ambiances
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/Mood"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /decades:
+    get:
+      tags: [catalogue]
+      operationId: listDecades
+      x-roles: [admin, user, agent]
+      summary: Décennies présentes dans la bibliothèque, d'après l'année des albums (CAT-08)
+      x-priority: P2
+      responses:
+        "200":
+          description: Décennies, de la plus ancienne à la plus récente
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/Decade"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /search:
+    get:
+      tags: [catalogue]
+      operationId: search
+      x-roles: [admin, user, agent]
+      summary: Recherche pendant la frappe, résultats groupés
+      description: |
+        Insensible à la casse et aux accents. Cherche dans les noms d'artistes, les titres
+        d'albums et de pistes. Pensée pour être appelée à chaque frappe (avec un léger délai
+        côté client) : réponse en quelques dizaines de millisecondes.
+      x-priority: P1
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 200}
+        - name: limit
+          in: query
+          description: Nombre maximal de résultats **par groupe**
+          schema: {type: integer, minimum: 1, maximum: 50, default: 8}
+      responses:
+        "200":
+          description: Résultats
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SearchResults"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  /random/tracks:
+    get:
+      tags: [catalogue]
+      operationId: randomTracks
+      summary: Pistes au hasard (page Aléatoire, mode infini)
+      description: |
+        Tirage parmi les pistes disponibles, filtré par genres (vide = tous), ambiance, années ou
+        collection, et sans les albums exclus. Une piste ne sort qu'une fois par tirage. Moins de
+        pistes que `count` si le filtre n'en contient pas assez (liste vide possible).
+      x-priority: P1
+      parameters:
+        - name: genre
+          in: query
+          description: Genres effectifs de la piste (les siens, sinon ceux de l'album) ; un genre parent comprend ses sous-genres
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {type: integer}
+        - name: count
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: exclude
+          in: query
+          description: Pistes à ne pas renvoyer (déjà dans la file)
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 1000
+            items: {type: integer}
+        - name: excludeAlbum
+          in: query
+          description: Albums à laisser de côté (décochés dans la page Aléatoire) ; 500 au plus, pour que l'adresse reste sous la limite d'Apache (8 Ko)
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 500
+            items: {type: integer}
+        - name: mood
+          in: query
+          description: Ambiance (`GET /moods`)
+          schema: {$ref: "#/components/schemas/MoodId"}
+        - name: yearFrom
+          in: query
+          description: Année de l'album, au moins (décennie 1980 = `yearFrom=1980&yearTo=1989`)
+          schema: {type: integer}
+        - name: yearTo
+          in: query
+          schema: {type: integer}
+        - name: collection
+          in: query
+          description: Seulement les albums de cette collection
+          schema: {type: integer}
+      responses:
+        "200":
+          description: Pistes tirées au hasard
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TrackList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  # ===========================================================================
+  # Lecture : flux, images, lecture continue
+  # ===========================================================================
+
+  /tracks/{id}/stream:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [lecture]
+      operationId: streamTrack
+      summary: Flux audio de la piste, avec les requêtes Range
+      description: |
+        `format=original` (par défaut) sert le **meilleur** fichier tel quel : sans perte s'il
+        existe, sinon le plus haut débit. Les requêtes `Range` (une seule plage) répondent `206`,
+        ce qu'il faut pour avancer dans le morceau.
+
+        Les autres formats sont des **conversions à la volée** (LEC-04), annoncées par
+        `ServerInfo.features.transcoding` et `transcodingFormats` ; sinon `501 not_implemented`.
+        - Le serveur ne convertit que si c'est utile : un MP3 n'est jamais converti en MP3, un
+          fichier avec perte jamais en FLAC, ni vers un débit égal ou supérieur au sien. Il sert
+          alors le fichier d'origine (le `Content-Type` dit ce qui arrive).
+        - Une conversion déjà faite est gardée en cache : elle se sert comme un fichier, avec
+          `Content-Length`, `ETag` et `Range`.
+        - Sinon le flux part pendant la conversion : pas de `Content-Length`,
+          `Accept-Ranges: none`, et une `Range` qui ne commence pas à 0 répond `416`. Pour
+          avancer, on redemande la piste avec `startMs` (la réponse commence à cette position).
+        - `startMs` ne s'applique qu'à une conversion ; il est ignoré pour le fichier d'origine.
+
+        Le lecteur web s'authentifie par son cookie : l'élément `<audio>` ne peut pas envoyer
+        d'en-tête `Authorization`.
+      x-priority: P1
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [original, mp3, opus, flac]
+            default: original
+        - name: bitrate
+          in: query
+          description: "Débit en kbit/s, pour une conversion. Par défaut : Opus 160, MP3 192."
+          schema: {type: integer, enum: [96, 128, 160, 192, 256, 320]}
+        - name: startMs
+          in: query
+          description: Position de départ, pour une conversion
+          schema: {type: integer, minimum: 0}
+        - name: Range
+          in: header
+          schema: {type: string, examples: ["bytes=0-1048575"]}
+      responses:
+        "200":
+          description: Fichier complet
+          headers:
+            Accept-Ranges:
+              description: "`none` pour une conversion en cours (pas encore en cache)"
+              schema: {type: string, enum: [bytes, none]}
+            Content-Length:
+              description: Absent pour une conversion en cours
+              schema: {type: integer}
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            audio/mpeg: {schema: {type: string, contentMediaType: audio/mpeg}}
+            audio/flac: {schema: {type: string, contentMediaType: audio/flac}}
+            audio/ogg: {schema: {type: string, contentMediaType: audio/ogg}}
+            audio/mp4: {schema: {type: string, contentMediaType: audio/mp4}}
+        "206":
+          description: Plage demandée
+          headers:
+            Content-Range: {schema: {type: string, examples: ["bytes 0-1048575/31457280"]}}
+            Content-Length: {schema: {type: integer}}
+          content:
+            audio/mpeg: {schema: {type: string, contentMediaType: audio/mpeg}}
+            audio/flac: {schema: {type: string, contentMediaType: audio/flac}}
+            audio/ogg: {schema: {type: string, contentMediaType: audio/ogg}}
+            audio/mp4: {schema: {type: string, contentMediaType: audio/mp4}}
+        "304": {description: Inchangé (If-None-Match)}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "416":
+          description: Plage hors du fichier, plusieurs plages, ou plage au milieu d’une conversion en cours
+          headers:
+            Content-Range: {schema: {type: string, examples: ["bytes */31457280"]}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+        "503": {$ref: "#/components/responses/StorageUnavailable"}
+
+  /images/{hash}:
+    parameters:
+      - name: hash
+        in: path
+        required: true
+        description: Empreinte SHA-256 de l'image, en hexadécimal
+        schema: {type: string, pattern: "^[0-9a-f]{64}$"}
+    get:
+      tags: [lecture]
+      operationId: getImage
+      x-roles: [admin, user, agent]
+      summary: Jaquette ou image d'artiste
+      description: |
+        L'adresse contient l'empreinte : une image ne change jamais à une adresse donnée.
+        Réponse avec `Cache-Control: private, max-age=31536000, immutable`.
+        Les vignettes sont produites à la première demande puis gardées en cache.
+        Aussi accessible à l'invité d'un lien de télécommande (pochettes de la file).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+        - remoteCookie: []
+      x-priority: P1
+      parameters:
+        - name: size
+          in: query
+          description: "Côté le plus long : `s` = 96 px, `m` = 300 px, `l` = 600 px, `original`"
+          schema:
+            type: string
+            enum: [s, m, l, original]
+            default: m
+      responses:
+        "200":
+          description: Image
+          headers:
+            Cache-Control: {schema: {type: string}}
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            image/jpeg: {schema: {type: string, contentMediaType: image/jpeg}}
+            image/png: {schema: {type: string, contentMediaType: image/png}}
+            image/webp: {schema: {type: string, contentMediaType: image/webp}}
+        "304": {description: Inchangé (If-None-Match)}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /backgrounds:
+    get:
+      tags: [lecture]
+      operationId: listBackgrounds
+      summary: Images de fond actives (le client en tire une au hasard)
+      description: |
+        Images choisies par l'admin pour le fond du site. Le réglage `interface.background` du
+        compte dit si le client les affiche.
+      x-priority: P3
+      responses:
+        "200":
+          description: Fonds actifs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/BackgroundRef"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /backgrounds/{id}/image:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [lecture]
+      operationId: getBackgroundImage
+      summary: Image de fond
+      description: |
+        Une image ne change jamais : l'adresse donnée par `imageUrl` porte son empreinte (`v`).
+        Réponse avec `Cache-Control: private, max-age=31536000, immutable`.
+      x-priority: P3
+      parameters:
+        - name: v
+          in: query
+          description: Début de l'empreinte de l'image (pour le cache du navigateur)
+          schema: {type: string, pattern: "^[0-9a-f]{1,64}$"}
+      responses:
+        "200":
+          description: Image
+          headers:
+            Cache-Control: {schema: {type: string}}
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            image/jpeg: {schema: {type: string, contentMediaType: image/jpeg}}
+            image/png: {schema: {type: string, contentMediaType: image/png}}
+            image/webp: {schema: {type: string, contentMediaType: image/webp}}
+        "304": {description: Inchangé (If-None-Match)}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/backgrounds:
+    get:
+      tags: [admin-comptes]
+      operationId: adminListBackgrounds
+      summary: Toutes les images de fond (actives ou non)
+      x-priority: P3
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Fonds, du plus récent au plus ancien
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/Background"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [admin-comptes]
+      operationId: adminCreateBackground
+      summary: Ajouter une image de fond
+      description: |
+        Le corps est l'image elle-même (JPEG, PNG ou WebP, 6 Mo et 8000 px au plus). Le lecteur
+        web la réduit avant l'envoi (2560 px de large au plus). Elle est active tout de suite.
+        30 images au plus ; une image déjà présente (même empreinte) est refusée (409).
+      x-priority: P3
+      x-roles: [admin]
+      parameters:
+        - name: name
+          in: query
+          description: Nom affiché dans l'admin (par défaut « Fond n° … »)
+          schema: {type: string, maxLength: 100}
+      requestBody:
+        required: true
+        content:
+          image/jpeg: {schema: {type: string, contentMediaType: image/jpeg}}
+          image/png: {schema: {type: string, contentMediaType: image/png}}
+          image/webp: {schema: {type: string, contentMediaType: image/webp}}
+      responses:
+        "201":
+          description: Fond ajouté
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Background"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/backgrounds/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [admin-comptes]
+      operationId: adminUpdateBackground
+      summary: Renommer, activer ou désactiver une image de fond
+      x-priority: P3
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                active: {type: boolean}
+      responses:
+        "200":
+          description: Fond modifié
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Background"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [admin-comptes]
+      operationId: adminDeleteBackground
+      summary: Supprimer une image de fond
+      x-priority: P3
+      x-roles: [admin]
+      responses:
+        "204": {description: Supprimé}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /playback/next:
+    post:
+      tags: [lecture]
+      operationId: nextTracks
+      summary: Pistes suivantes pour la lecture continue intelligente
+      description: |
+        Choisit les pistes qui suivent selon les règles `continuous` des réglages de
+        l'utilisateur (genres, favoris, clé compatible, plage de BPM, énergie, pas de répétition
+        récente, artistes espacés). Le client peut surcharger certaines règles pour cette demande.
+
+        Chaque piste choisie sert de référence à la suivante. Clé compatible : même code Camelot,
+        ±1 sur la roue, ou l'autre lettre ; le double ou la moitié du BPM comptent aussi. Quand plus
+        aucune piste ne respecte toutes les règles, elles sont relâchées une à une (énergie, BPM, clé,
+        espacement des artistes) : la liste peut être plus courte que `count`, jamais vide tant
+        qu'il reste des pistes permises (genres, pas de répétition récente).
+      x-priority: P2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NextTracksRequest"}
+      responses:
+        "200":
+          description: Pistes proposées, dans l'ordre de lecture
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TrackList"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+
+  # ===========================================================================
+  # Télécommande partagée (FUT-02)
+  # ===========================================================================
+
+  /me/shares:
+    get:
+      tags: [telecommande]
+      operationId: listMyShares
+      summary: Liens de télécommande en cours
+      description: Liens encore valables (ni expirés, ni révoqués), du plus récent au plus ancien.
+      x-priority: P3
+      responses:
+        "200":
+          description: Liens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/QueueShare"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    post:
+      tags: [telecommande]
+      operationId: createMyShare
+      summary: Créer un lien de télécommande
+      description: |
+        Quiconque ouvre le lien pilote la file de ce compte, sans compte, dans les limites des
+        droits choisis, jusqu'à l'expiration ou la révocation. Le secret n'est montré qu'une fois
+        (`token`, `url`) ; le serveur n'en garde que l'empreinte. Au plus 10 liens valables à la fois.
+        Sans hub temps réel (`features.remoteControl = false`) : `503 realtime_unavailable`.
+      x-priority: P3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/QueueShareInput"}
+      responses:
+        "201":
+          description: Lien créé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/QueueShareCreated"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /me/shares/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    delete:
+      tags: [telecommande]
+      operationId: revokeMyShare
+      summary: Révoquer un lien de télécommande
+      description: L'invité est prévenu tout de suite (événement `revoked`) et ne peut plus rien faire.
+      x-priority: P3
+      responses:
+        "204": {description: Lien révoqué}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /me/realtime:
+    get:
+      tags: [telecommande]
+      operationId: getMyRealtimeChannel
+      summary: Canal temps réel du lecteur (commandes des invités)
+      description: |
+        Abonnement au hub Mercure (flux SSE) : le lecteur y reçoit les commandes des invités et
+        l'annonce des liens créés ou révoqués. Le jeton ne vaut que pour ces sujets et expire vite
+        (`expiresAt`) : le redemander avant. Messages : voir `RealtimeChannel`.
+      x-priority: P3
+      responses:
+        "200":
+          description: Canal
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RealtimeChannel"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /me/player:
+    put:
+      tags: [telecommande]
+      operationId: reportMyPlayer
+      summary: État du lecteur, pour les invités
+      description: |
+        Le lecteur l'envoie quand des liens sont valables (`RealtimeChannel.sharesActive`) : à chaque
+        changement de piste, de lecture ou de pause, et toutes les 30 s. Le lecteur qui joue devient
+        celui qui reçoit les commandes ; un autre appareil en pause ne le lui reprend pas.
+        Sans nouvelles depuis 75 s, le lecteur est considéré comme éteint.
+      x-priority: P3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PlayerReport"}
+      responses:
+        "204": {description: Noté}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /remote/session:
+    post:
+      tags: [telecommande]
+      operationId: openRemoteSession
+      summary: Ouvrir la télécommande avec le secret du lien
+      description: |
+        Échange le secret du lien (partie après `#` de l'adresse) contre le cookie `musique_remote`
+        (HttpOnly, Secure, SameSite=Strict, jusqu'à l'expiration du lien), utilisé ensuite par
+        toutes les opérations de l'invité. Secret inconnu, expiré ou révoqué : `401 invalid_token`.
+      security: []
+      x-priority: P3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string, minLength: 20, maxLength: 100}
+      responses:
+        "200":
+          description: Télécommande ouverte (cookie posé)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RemoteState"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /remote:
+    get:
+      tags: [telecommande]
+      operationId: getRemote
+      summary: État vu par l'invité (lecteur, file, droits)
+      security:
+        - remoteCookie: []
+      x-priority: P3
+      responses:
+        "200":
+          description: État
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RemoteState"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /remote/search:
+    get:
+      tags: [telecommande]
+      operationId: searchRemote
+      summary: Recherche de l'invité (pistes et albums à ajouter)
+      description: Seulement avec le droit `add`.
+      security:
+        - remoteCookie: []
+      x-priority: P3
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Texte recherché, insensible à la casse et aux accents
+          schema: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        "200":
+          description: Résultats (au plus 20 de chaque)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tracks, albums]
+                properties:
+                  tracks:
+                    type: array
+                    items: {$ref: "#/components/schemas/Track"}
+                  albums:
+                    type: array
+                    items: {$ref: "#/components/schemas/AlbumSummary"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /remote/commands:
+    post:
+      tags: [telecommande]
+      operationId: sendRemoteCommand
+      summary: Envoyer une commande au lecteur
+      description: |
+        Le serveur vérifie les droits du lien et les pistes, puis relaie la commande au lecteur
+        qui joue, qui l'applique et enregistre la file. Les invités voient le résultat par
+        l'événement `changed`. Lecteur éteint : `409 player_offline`. Droit manquant :
+        `403 forbidden`. Session de l'invité : en-tête `X-CSRF-Token` (`RemoteState.csrfToken`).
+      security:
+        - remoteCookie: []
+      x-priority: P3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RemoteCommand"}
+      responses:
+        "202":
+          description: Commande relayée au lecteur
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AcceptedResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  # ===========================================================================
+  # Admin : comptes et jetons
+  # ===========================================================================
+
+  /admin/users:
+    get:
+      tags: [admin-comptes]
+      operationId: adminListUsers
+      summary: Comptes, dont les demandes en attente
+      x-priority: P1
+      x-roles: [admin]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: "#/components/schemas/UserStatus"}
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page de comptes
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminUserPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [admin-comptes]
+      operationId: adminCreateUser
+      summary: Créer un compte directement (actif), par exemple le compte de l'agent
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AdminUserCreate"}
+      responses:
+        "201":
+          description: Compte créé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminUser"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [admin-comptes]
+      operationId: adminGetUser
+      summary: Un compte, avec ses appareils
+      x-priority: P1
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Compte
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminUserDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [admin-comptes]
+      operationId: adminUpdateUser
+      summary: Approuver, refuser, suspendre, réactiver, changer le rôle
+      description: |
+        Approuver une demande = passer `status` de `pending` à `active` ; un e-mail prévient
+        l'utilisateur, de même qu'un refus. Suspendre révoque toutes ses sessions et tous ses jetons.
+        Un admin ne peut ni se suspendre ni retirer son propre rôle d'admin.
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AdminUserUpdate"}
+      responses:
+        "200":
+          description: Compte modifié
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminUser"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/users/{id}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [admin-comptes]
+      operationId: adminCreateToken
+      summary: Créer un jeton pour un compte (notamment le jeton de l'agent)
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {$ref: "#/components/schemas/DeviceName"}
+                expiresAt: {type: [string, "null"], format: date-time}
+      responses:
+        "201":
+          description: Jeton créé (affiché une seule fois)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/tokens/{tokenId}:
+    parameters:
+      - $ref: "#/components/parameters/TokenId"
+    delete:
+      tags: [admin-comptes]
+      operationId: adminRevokeToken
+      summary: Révoquer une session ou un jeton de n'importe quel compte
+      x-priority: P1
+      x-roles: [admin]
+      responses:
+        "204": {description: Révoqué}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/server-settings:
+    get:
+      tags: [admin-comptes]
+      operationId: adminGetServerSettings
+      summary: Réglages globaux du serveur
+      x-priority: P1
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Réglages
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServerSettings"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    patch:
+      tags: [admin-comptes]
+      operationId: adminUpdateServerSettings
+      summary: Modifier les réglages globaux
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ServerSettingsUpdate"}
+      responses:
+        "200":
+          description: Réglages modifiés
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServerSettings"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  # ===========================================================================
+  # Admin : bibliothèque (corrections, propositions de l'agent)
+  # ===========================================================================
+
+  /admin/genre-aliases:
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListGenreAliases
+      summary: Valeurs de genre lues dans les tags, rattachées ou non
+      description: |
+        Un tag ne crée jamais de genre tout seul. Les valeurs non rattachées (`mapped=false`)
+        attendent que l'admin ou l'agent les relie à un genre.
+      x-priority: P1
+      x-roles: [admin, agent]
+      parameters:
+        - name: mapped
+          in: query
+          schema: {type: boolean}
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page d'alias, les plus fréquents d'abord
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenreAliasPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminMapGenreAlias
+      summary: Rattacher une valeur de tag à un genre (ou la détacher)
+      description: Les genres des pistes et des albums concernés sont recalculés aussitôt.
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alias, genreId]
+              properties:
+                alias: {type: string, minLength: 1, maxLength: 100}
+                genreId: {type: [integer, "null"]}
+      responses:
+        "200":
+          description: Alias mis à jour
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenreAlias"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/albums:
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminCreateAlbum
+      summary: Créer un album à partir de pistes existantes (séparer un dossier)
+      description: |
+        Exemple : un dossier qui contient deux albums. Les pistes indiquées y sont déplacées par
+        des corrections (`albumId`), donc annulables. L'album créé n'a pas de dossier source.
+        Ces corrections forment un lot déjà appliqué (`/admin/change-sets`), qui s'annule d'un coup.
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, trackIds]
+              properties:
+                title: {type: string, minLength: 1, maxLength: 255}
+                albumArtist: {type: [string, "null"]}
+                year: {type: [integer, "null"]}
+                trackIds:
+                  type: array
+                  minItems: 1
+                  items: {type: integer}
+      responses:
+        "201":
+          description: Album créé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AlbumDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/albums/{id}/merge:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminMergeAlbum
+      summary: Fusionner cet album dans un autre (un album réparti dans deux dossiers)
+      description: |
+        Ses pistes sont déplacées par des corrections (`albumId`). Elles forment un lot déjà
+        appliqué, renvoyé ici : `POST /admin/change-sets/{id}/revert` défait la fusion.
+        L'album vidé est masqué ; il réapparaît si la fusion est annulée.
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [intoAlbumId]
+              properties:
+                intoAlbumId: {type: integer}
+      responses:
+        "200":
+          description: Fusion faite
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangeSet"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/albums/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminGetAlbum
+      summary: Album vu par l'admin (dossier source, fichiers, corrections actives)
+      x-priority: P2
+      x-roles: [admin, agent]
+      responses:
+        "200":
+          description: Album
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminAlbumDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [admin-bibliotheque]
+      operationId: adminUpdateAlbum
+      summary: Corriger un album
+      description: |
+        Chaque champ modifié devient une **correction** : elle survit aux scans et peut être
+        annulée. Réservé à l'admin ; l'agent passe par une proposition (`/admin/change-sets`).
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AlbumPatch"}
+      responses:
+        "200":
+          description: Album corrigé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AlbumDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/tracks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [admin-bibliotheque]
+      operationId: adminUpdateTrack
+      summary: Corriger une piste
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TrackPatch"}
+      responses:
+        "200":
+          description: Piste corrigée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Track"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/collections:
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminCreateCollection
+      summary: Créer une collection d'albums (CAT-08)
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CollectionInput"}
+      responses:
+        "201":
+          description: Collection créée (vide)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Collection"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/collections/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [admin-bibliotheque]
+      operationId: adminUpdateCollection
+      summary: Renommer ou décrire une collection
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CollectionInput"}
+      responses:
+        "200":
+          description: Collection modifiée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Collection"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+    delete:
+      tags: [admin-bibliotheque]
+      operationId: adminDeleteCollection
+      summary: Supprimer une collection (les albums restent)
+      x-priority: P2
+      x-roles: [admin]
+      responses:
+        "204": {description: Supprimée}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/collections/{id}/albums:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [admin-bibliotheque]
+      operationId: adminSetCollectionAlbums
+      summary: Albums d'une collection, dans l'ordre (remplace la liste)
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [albumIds]
+              properties:
+                albumIds:
+                  type: array
+                  maxItems: 2000
+                  uniqueItems: true
+                  items: {type: integer}
+      responses:
+        "200":
+          description: Collection et ses albums
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CollectionDetail"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/artists/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [admin-bibliotheque]
+      operationId: adminUpdateArtist
+      summary: Corriger un artiste (nom, nom de tri)
+      description: |
+        Chaque champ devient une correction annulable. Un artiste renommé garde ses pistes : les
+        tags qui portent l'ancien nom continuent de pointer vers lui après un scan. Si le nouveau
+        nom est celui d'un autre artiste, la réponse est `409` : il faut fusionner les deux.
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ArtistPatch"}
+      responses:
+        "200":
+          description: Artiste corrigé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ArtistSummary"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/artists/{id}/image:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [admin-bibliotheque]
+      operationId: adminSetArtistImage
+      summary: Photo d'un artiste (CAT-04)
+      description: |
+        Le corps est l'image elle-même (JPEG, PNG ou WebP, 6 Mo et 8000 px au plus). Le lecteur web
+        la réduit avant l'envoi. Elle est gardée en base (sauvegardée avec elle) et remplace la
+        précédente ; une image identique déjà connue est réutilisée.
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          image/jpeg: {schema: {type: string, contentMediaType: image/jpeg}}
+          image/png: {schema: {type: string, contentMediaType: image/png}}
+          image/webp: {schema: {type: string, contentMediaType: image/webp}}
+      responses:
+        "200":
+          description: Artiste, avec son image
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ArtistSummary"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      tags: [admin-bibliotheque]
+      operationId: adminDeleteArtistImage
+      summary: Retirer la photo d'un artiste
+      x-priority: P2
+      x-roles: [admin]
+      responses:
+        "204": {description: Retirée}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/artists/{id}/merge:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminMergeArtist
+      summary: Fusionner cet artiste dans un autre (doublons, variantes d'orthographe)
+      description: |
+        Enregistré comme un lot appliqué (une correction `mergedInto` sur cet artiste), donc
+        annulable. Ses pistes et ses albums passent à l'autre artiste, et les tags qui portent
+        son nom y mènent aussi après un scan. `409` si cet artiste est déjà fusionné ; on ne
+        fusionne pas non plus dans un artiste lui-même fusionné (`400`).
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [intoArtistId]
+              properties:
+                intoArtistId: {type: integer}
+      responses:
+        "200":
+          description: Fusion faite
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangeSet"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/genres:
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminCreateGenre
+      summary: Créer un genre
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GenreInput"}
+      responses:
+        "201":
+          description: Genre créé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Genre"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/genres/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    patch:
+      tags: [admin-bibliotheque]
+      operationId: adminUpdateGenre
+      summary: Renommer un genre ou changer son parent
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GenreInput"}
+      responses:
+        "200":
+          description: Genre modifié
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Genre"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+    delete:
+      tags: [admin-bibliotheque]
+      operationId: adminDeleteGenre
+      summary: Supprimer un genre (ou le fusionner dans un autre)
+      x-priority: P1
+      x-roles: [admin]
+      parameters:
+        - name: mergeInto
+          in: query
+          description: Genre qui reçoit les albums ; sans lui, les albums perdent simplement ce genre
+          schema: {type: integer}
+      responses:
+        "204": {description: Supprimé}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/corrections:
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListCorrections
+      summary: Historique des corrections
+      x-priority: P1
+      x-roles: [admin, agent]
+      parameters:
+        - name: entityType
+          in: query
+          schema: {$ref: "#/components/schemas/ChangeEntityType"}
+        - name: entityId
+          in: query
+          schema: {type: integer}
+        - name: status
+          in: query
+          schema: {$ref: "#/components/schemas/CorrectionStatus"}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page de corrections, de la plus récente à la plus ancienne
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CorrectionPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/corrections/{id}/revert:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminRevertCorrection
+      summary: Annuler une correction (la valeur lue par l'indexeur revient)
+      x-priority: P1
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Correction annulée
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Correction"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/change-sets:
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListChangeSets
+      summary: Lots de changements (propositions de l'agent, fusions et séparations de l'admin)
+      description: Les plus récents d'abord. `changeCount` compte les changements ; le détail est dans `GET /admin/change-sets/{id}`.
+      x-priority: P2
+      x-roles: [admin, agent]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: "#/components/schemas/ChangeSetStatus"}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page de lots
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangeSetPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminCreateChangeSet
+      summary: Proposer un lot de changements (agent) ou en préparer un (admin)
+      description: |
+        Le lot est créé en statut `pending` : rien ne change dans la bibliothèque avant que
+        l'admin l'applique. Chaque changement est vérifié à la création (élément existant,
+        champ autorisé, valeur valide) ; une erreur désigne le changement fautif
+        (`details.field` : `changes[3].value`).
+      x-priority: P2
+      x-roles: [admin, agent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ChangeSetInput"}
+      responses:
+        "201":
+          description: Lot créé
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangeSet"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/change-sets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminGetChangeSet
+      summary: Un lot, avec chaque changement et la valeur actuelle en regard
+      x-priority: P2
+      x-roles: [admin, agent]
+      responses:
+        "200":
+          description: Lot
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangeSet"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/change-sets/{id}/{action}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - name: action
+        in: path
+        required: true
+        description: |
+          `apply` applique le lot (`pending` → `applied`), `reject` le refuse
+          (`pending` → `rejected`), `revert` annule un lot appliqué (`applied` → `reverted`,
+          toutes ses corrections encore actives). À l'application, chaque changement est vérifié
+          de nouveau : si l'un n'est plus possible (genre supprimé, artiste déjà fusionné…), rien
+          n'est appliqué et la réponse est `409`.
+        schema:
+          type: string
+          enum: [apply, reject, revert]
+    post:
+      tags: [admin-bibliotheque]
+      operationId: adminDecideChangeSet
+      summary: Appliquer, refuser ou annuler un lot
+      x-priority: P2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Lot mis à jour
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangeSet"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  # ===========================================================================
+  # Serveur MCP (IA-03)
+  # ===========================================================================
+
+  /mcp:
+    post:
+      tags: [mcp]
+      operationId: mcp
+      summary: Serveur MCP (Model Context Protocol) pour l'agent Claude
+      description: |
+        Transport MCP « Streamable HTTP », sans session : chaque `POST` porte un message JSON-RPC 2.0
+        et reçoit sa réponse en `application/json` (jamais de flux `text/event-stream` ; `GET` répond
+        `405`). Versions du protocole acceptées : `2025-11-25`, `2025-06-18`, `2025-03-26`.
+
+        Méthodes : `initialize`, `ping`, `tools/list`, `tools/call`. Une notification (message sans
+        `id`, comme `notifications/initialized`) reçoit `202` sans corps.
+
+        Les outils sont des routes de cette API, appelées en interne avec les droits du jeton : lire
+        la bibliothèque (recherche, albums avec leurs tags bruts, artistes, pistes, genres, valeurs de
+        genre des tags, collections, doublons, mêmes enregistrements, fichiers abîmés, dépôt, erreurs
+        d'indexation, corrections, lots) et proposer un lot de changements (`propose_changes`, comme
+        `POST /admin/change-sets`). Rien d'autre ne modifie la bibliothèque.
+
+        Une erreur de l'outil (identifiant inconnu, valeur refusée) revient dans le résultat avec
+        `isError: true` et le message dans la langue du serveur ; une erreur de protocole dans `error`.
+        Jeton obligatoire (`Authorization: Bearer`, jeton d'un compte agent ou admin) : une session
+        web reçoit `403`.
+
+        Avec Claude Code : `claude mcp add --transport http rengaine https://<serveur>/api/v2/mcp
+        --header "Authorization: Bearer <jeton>"`.
+      x-priority: P2
+      x-roles: [admin, agent]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/McpRequest"}
+      responses:
+        "200":
+          description: Réponse JSON-RPC (`result` ou `error`)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/McpResponse"}
+        "202":
+          description: Notification reçue
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+
+  # ===========================================================================
+  # Admin : tâches de fond et journaux
+  # ===========================================================================
+
+  /admin/jobs:
+    get:
+      tags: [admin-taches]
+      operationId: adminListJobs
+      summary: Passages de l'indexeur, de l'analyseur…
+      x-priority: P1
+      x-roles: [admin]
+      parameters:
+        - name: type
+          in: query
+          schema: {$ref: "#/components/schemas/JobType"}
+        - name: status
+          in: query
+          schema: {$ref: "#/components/schemas/JobStatus"}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page de tâches, de la plus récente à la plus ancienne
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/JobPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      tags: [admin-taches]
+      operationId: adminCreateJob
+      summary: Demander un passage (scan complet ou d'un dossier, analyse…)
+      description: |
+        La requête ne fait que mettre la tâche en file (`queued`) ; un service systemd la
+        traite. Aucune requête web ne parcourt le stockage.
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/JobInput"}
+      responses:
+        "202":
+          description: Tâche mise en file
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Job"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/jobs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [admin-taches]
+      operationId: adminGetJob
+      summary: Une tâche et son avancement
+      x-priority: P1
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Tâche
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Job"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/inbox:
+    get:
+      tags: [admin-taches]
+      operationId: adminListInbox
+      summary: État du dépôt (albums déposés dans inbox/, en attente de rangement ou rangés)
+      description: |
+        Les albums déposés dans `inbox/` (rclone, Nextcloud…) sont rangés sous
+        `Artiste/Album (année)/01 - Titre.ext` à chaque passage de l'indexeur, une fois immobiles.
+        Cette liste vient de la base (dernier passage) : la requête ne parcourt pas le stockage.
+        Les dossiers rangés restent 30 jours dans la liste.
+      x-priority: P2
+      x-roles: [admin, agent]
+      responses:
+        "200":
+          description: Dossiers du dépôt, les plus récents d'abord
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/InboxItem"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/duplicates:
+    get:
+      tags: [admin-taches]
+      operationId: adminListDuplicates
+      summary: Albums dont des pistes existent en MP3 et en sans perte (FLAC…)
+      description: |
+        LEC-05. Le fichier sans perte est servi (et converti à la volée au besoin) : le MP3 en
+        double ne sert plus qu'à prendre de la place. Un MP3 n'est retirable que si son FLAC est
+        présent dans le stockage et de même durée (à 2 s près) ; sinon il est gardé (`kept`).
+        On retire album par album avec une tâche `dedup` (`POST /admin/jobs`).
+        Calculé depuis la base : la requête ne parcourt pas le stockage.
+      x-priority: P2
+      x-roles: [admin, agent]
+      responses:
+        "200":
+          description: Albums concernés, ceux qui libèrent le plus de place d'abord
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, removableBytes]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/DuplicateAlbum"}
+                  removableBytes: {type: integer, description: Place libérée si tout est retiré}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/same-recordings:
+    get:
+      tags: [admin-taches]
+      operationId: adminListSameRecordings
+      summary: Même enregistrement dans plusieurs pistes (empreinte acoustique)
+      description: |
+        BAS-03. Reconnu par l'empreinte acoustique (Chromaprint, 120 premières secondes), quels que
+        soient les tags, le format, le volume ou un décalage du début : sert au dédoublonnage entre
+        sources (ancienne prod, Nextcloud…). Les paires se calculent pendant l'analyse ; les pistes
+        reliées entre elles forment un groupe. Rien n'est retiré : c'est un signalement.
+        `score` : ressemblance la plus faible du groupe ; à partir de 0,95 c'est le même
+        enregistrement (autre encodage), de 0,80 à 0,95 très proche (autre extraction, remasterisé).
+      x-priority: P2
+      x-roles: [admin, agent]
+      parameters:
+        - name: minScore
+          in: query
+          schema: {type: number, minimum: 0.5, maximum: 1, default: 0.8}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Groupes, les plus sûrs d'abord
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageInfo"
+                  - type: object
+                    required: [items, fingerprinted, pending]
+                    properties:
+                      items:
+                        type: array
+                        items: {$ref: "#/components/schemas/SameRecordingGroup"}
+                      fingerprinted: {type: integer, description: Pistes dont l'empreinte est relevée}
+                      pending: {type: integer, description: Pistes en attente d'empreinte}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/damaged-tracks:
+    get:
+      tags: [admin-taches]
+      operationId: adminListDamagedTracks
+      summary: Pistes dont le fichier servi a des trames illisibles
+      description: |
+        Relevé pendant la mesure du volume, sur le fichier servi (le meilleur de la piste). ffmpeg
+        saute ces trames à la lecture, mais on entend un accroc à cet endroit. Une trame illisible
+        dans la dernière seconde et demie (fin coupée à l'encodage, inaudible) n'est pas comptée.
+        À savoir avant une migration : garder une autre copie du morceau s'il y en a une.
+      x-priority: P2
+      x-roles: [admin, agent]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Pistes concernées, les plus abîmées d'abord
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PageInfo"
+                  - type: object
+                    required: [items, checked, pending]
+                    properties:
+                      items:
+                        type: array
+                        items: {$ref: "#/components/schemas/DamagedTrack"}
+                      checked: {type: integer, description: Pistes vérifiées}
+                      pending: {type: integer, description: Pistes pas encore vérifiées}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/duplicates/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [admin-taches]
+      operationId: adminGetDuplicates
+      summary: Détail d'un album, piste par piste (retirable ou gardé, et pourquoi)
+      x-priority: P2
+      x-roles: [admin, agent]
+      responses:
+        "200":
+          description: Album et ses MP3 en double
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DuplicateAlbumDetail"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/job-errors:
+    get:
+      tags: [admin-taches]
+      operationId: adminListJobErrors
+      summary: Erreurs d'indexation et d'analyse, par fichier
+      x-priority: P1
+      x-roles: [admin, agent]
+      parameters:
+        - name: job
+          in: query
+          schema: {type: integer}
+        - name: open
+          in: query
+          description: "`true` = seulement les erreurs non résolues"
+          schema: {type: boolean, default: true}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page d'erreurs
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/JobErrorPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/audit:
+    get:
+      tags: [admin-taches]
+      operationId: adminListAudit
+      summary: Journal d'audit (qui a fait quoi, quand)
+      x-priority: P1
+      x-roles: [admin]
+      parameters:
+        - name: action
+          in: query
+          description: Préfixe accepté (`user.` donne toutes les actions sur les comptes)
+          schema: {type: string}
+        - name: actor
+          in: query
+          schema: {type: integer}
+        - name: targetType
+          in: query
+          schema: {type: string}
+        - name: targetId
+          in: query
+          schema: {type: integer}
+        - name: from
+          in: query
+          schema: {type: string, format: date-time}
+        - name: to
+          in: query
+          schema: {type: string, format: date-time}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page d'événements, du plus récent au plus ancien
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/logs:
+    get:
+      tags: [admin-taches]
+      operationId: adminListLogs
+      summary: Journaux techniques du serveur (JRN-07), du plus récent au plus ancien
+      description: |
+        Lit les fichiers de `[journaux] dossier` : `api` (le site et l'API), `cli` (tâches de fond et
+        commandes), `securite` (échecs de connexion, jetons invalides, dépassements de débit), y compris
+        les fichiers déjà tournés par logrotate. Les secrets n'y figurent jamais (masqués à l'écriture).
+        Une page s'arrête à `limit` entrées ou après avoir parcouru 200 000 lignes : `next` permet de
+        continuer, même si la page est vide.
+      x-priority: P2
+      x-roles: [admin]
+      parameters:
+        - name: source
+          in: query
+          schema: {type: string, enum: [api, cli, securite], default: api}
+        - name: level
+          in: query
+          description: Niveau minimal (le journal de sécurité est tout entier en `warning`)
+          schema: {$ref: "#/components/schemas/LogLevel"}
+        - name: q
+          in: query
+          description: Texte cherché dans la ligne entière (message et contexte), sans tenir compte de la casse
+          schema: {type: string, maxLength: 200}
+        - name: requestId
+          in: query
+          description: Seulement les lignes de cette requête (en-tête `X-Request-Id`)
+          schema: {type: string, pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"}
+        - name: cursor
+          in: query
+          description: Valeur `next` de la page précédente
+          schema: {type: string, maxLength: 40}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        "200":
+          description: Entrées du journal
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LogPage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+# =============================================================================
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Jeton d'appareil (appli) ou d'agent
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: musique_session
+      description: Session du lecteur web. Les requêtes qui modifient exigent aussi `X-CSRF-Token`.
+    remoteCookie:
+      type: apiKey
+      in: cookie
+      name: musique_remote
+      description: |
+        Invité d'un lien de télécommande (FUT-02), posé par `POST /remote/session`. Les requêtes
+        qui modifient exigent aussi `X-CSRF-Token` (`RemoteState.csrfToken`).
+
+  headers:
+    ETag:
+      description: Version de la ressource, à renvoyer dans `If-Match` ou `If-None-Match`
+      schema: {type: string, examples: ['"7"']}
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: {type: integer, minimum: 1}
+    TokenId:
+      name: tokenId
+      in: path
+      required: true
+      schema: {type: integer, minimum: 1}
+    Query:
+      name: q
+      in: query
+      description: Texte recherché, insensible à la casse et aux accents
+      schema: {type: string, maxLength: 200}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 500, default: 50}
+    Offset:
+      name: offset
+      in: query
+      schema: {type: integer, minimum: 0, default: 0}
+    Order:
+      name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+    Seed:
+      name: seed
+      in: query
+      description: Graine du tri aléatoire ; la même graine donne le même ordre
+      schema: {type: integer, minimum: 0}
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: "`ETag` reçu à la dernière lecture"
+      schema: {type: string}
+
+  responses:
+    BadRequest:
+      description: Requête invalide (paramètre manquant ou hors limites)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Unauthorized:
+      description: Pas authentifié, ou identifiants, jeton ou code invalides
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Forbidden:
+      description: Authentifié, mais pas autorisé (rôle insuffisant, compte en attente…)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotFound:
+      description: Élément introuvable
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Conflict:
+      description: Conflit avec l'état actuel (nom déjà pris, lot déjà appliqué…)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    PreconditionFailed:
+      description: |
+        Modifié entre-temps par un autre appareil. `error.details.current` contient la version
+        actuelle ; l'en-tête `ETag` sa version.
+      headers:
+        ETag: {$ref: "#/components/headers/ETag"}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    PreconditionRequired:
+      description: En-tête `If-Match` manquant
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    TooManyRequests:
+      description: Trop de requêtes
+      headers:
+        Retry-After:
+          description: Secondes à attendre
+          schema: {type: integer}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    NotImplemented:
+      description: Fonction prévue (P2 ou P3) mais pas encore disponible
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    StorageUnavailable:
+      description: Le stockage (S3 ou disque) ne répond pas
+      headers:
+        Retry-After: {schema: {type: integer}}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+
+  schemas:
+
+    # ---------------------------------------------------------------- Communs
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [status, code, message, requestId]
+          properties:
+            status: {type: integer, examples: [404]}
+            code:
+              type: string
+              description: |
+                Code stable, testable par le client. Exemples : `bad_request`, `unauthorized`,
+                `invalid_credentials`, `invalid_code` (code d'appairage), `invalid_token` (lien de nouveau mot de passe), `account_pending`, `account_suspended`,
+                `account_locked` (plus renvoyé depuis 2.25.0), `registration_closed`, `pending_limit`, `forbidden`, `csrf_invalid`
+                (en-tête `X-CSRF-Token` absent ou faux), `not_found`, `method_not_allowed`, `conflict`,
+                `version_conflict`, `precondition_required`, `rate_limited`, `range_not_satisfiable`,
+                `not_implemented`, `storage_unavailable`, `internal`, `player_offline` (aucun lecteur
+                allumé pour la télécommande), `realtime_unavailable` (hub temps réel absent ou injoignable).
+                Toute opération peut répondre `401`, `403 csrf_invalid` (session web), `429` et `503` avec
+                ce format, même si l'opération ne les liste pas.
+              examples: [not_found]
+            message:
+              type: string
+              description: Message lisible, en français
+              examples: [Album introuvable]
+            requestId: {type: string, examples: [01JADQ8Z6R5Y3W0N2C4V7B9K1M]}
+            details:
+              type: object
+              description: Précisions (champ invalide, version actuelle…)
+              additionalProperties: true
+
+    PageInfo:
+      type: object
+      required: [total, limit, offset]
+      properties:
+        total: {type: integer, description: Nombre total d'éléments correspondant à la demande}
+        limit: {type: integer}
+        offset: {type: integer}
+
+    AcceptedResponse:
+      type: object
+      required: [message]
+      properties:
+        message: {type: string}
+
+    DateTime:
+      type: string
+      format: date-time
+      examples: ["2026-10-19T08:30:00.000Z"]
+
+    Camelot:
+      type: string
+      pattern: "^(1[0-2]|[1-9])[AB]$"
+      examples: [8A]
+
+    # ---------------------------------------------------------------- Serveur
+
+    Language:
+      type: string
+      enum: [fr, en]
+      default: fr
+      description: Langue de l'interface (`fr` français, `en` anglais)
+
+    ServerInfo:
+      type: object
+      required: [name, apiVersion, language, registrationOpen, features, limits]
+      properties:
+        name: {type: string, examples: [Rengaine]}
+        apiVersion: {type: string, examples: [2.0.0]}
+        registrationOpen: {type: boolean}
+        language:
+          $ref: "#/components/schemas/Language"
+          description: |
+            Langue du serveur, choisie par l'admin (WEB-13, depuis la 2.22.0) : celle du site web pour tous
+            les comptes. Les textes écrits par le serveur la suivent : `message` des erreurs et des réponses,
+            mails, noms et descriptions des ambiances (`GET /moods`), motifs du dépôt et des doublons. Les noms
+            de genres restent ceux de la bibliothèque. Un client garde ses propres textes et se fie aux `code`
+            d'erreur, qui ne changent pas. Absent avant la 2.22.0 : lire `fr`.
+        features:
+          type: object
+          description: Fonctions disponibles sur ce serveur
+          required: [transcoding, continuousPlay, analysis, favorites, history, pairing, passwordReset]
+          properties:
+            transcoding:
+              type: boolean
+              description: Conversion à la volée (formats autres que `original`)
+            transcodingFormats:
+              type: array
+              items: {type: string, enum: [mp3, opus, flac]}
+            continuousPlay: {type: boolean, description: "`POST /playback/next`"}
+            analysis:
+              type: object
+              description: Analyses audio disponibles
+              properties:
+                loudness: {type: boolean}
+                silence: {type: boolean}
+                bpm: {type: boolean}
+                key: {type: boolean}
+                energy: {type: boolean}
+                waveform: {type: boolean, description: "`GET /tracks/{id}/waveform` (AUD-07)"}
+                beatGrid: {type: boolean, description: "`PlaybackInfo.beatGrid` (LEC-06)"}
+                fingerprint: {type: boolean, description: "Empreinte acoustique, `GET /admin/same-recordings` (BAS-03)"}
+            remoteControl: {type: boolean, description: "Télécommande partagée et hub temps réel (FUT-02, `/me/shares`) ; `false` aussi quand un admin l'a désactivée (`ServerSettings.remoteControlEnabled`)"}
+            favorites: {type: boolean}
+            history: {type: boolean}
+            pairing: {type: boolean}
+            passwordReset:
+              type: boolean
+              description: "« Mot de passe oublié » possible : le serveur envoie des mails (SMTP configuré)"
+        limits:
+          type: object
+          required: [maxPageSize, maxQueueLength]
+          properties:
+            maxPageSize: {type: integer, examples: [500]}
+            maxQueueLength: {type: integer, examples: [5000]}
+        library:
+          type: object
+          description: Taille de la bibliothèque (seulement pour un client authentifié)
+          properties:
+            albums: {type: integer}
+            artists: {type: integer}
+            tracks: {type: integer}
+            durationMs: {type: integer}
+            updatedAt: {$ref: "#/components/schemas/DateTime"}
+
+    # ---------------------------------------------------------------- Comptes
+
+    Role:
+      type: string
+      enum: [admin, user, agent]
+      description: "`agent` = Claude ; limité à la lecture de la bibliothèque et aux propositions"
+
+    UserStatus:
+      type: string
+      enum: [pending, active, suspended, refused]
+
+    DisplayName:
+      type: string
+      minLength: 1
+      maxLength: 100
+
+    DeviceName:
+      type: string
+      minLength: 1
+      maxLength: 100
+      examples: [Pixel 8 de Rémy]
+
+    Password:
+      type: string
+      minLength: 10
+      maxLength: 200
+      description: 10 caractères au moins ; haché en argon2id
+
+    User:
+      type: object
+      required: [id, email, displayName, role]
+      properties:
+        id: {type: integer}
+        email: {type: string, format: email}
+        displayName: {type: string}
+        role: {$ref: "#/components/schemas/Role"}
+
+    ExportTrack:
+      description: Piste décrite pour rester lisible hors de Rengaine ; null si elle n'existe plus
+      oneOf:
+        - type: object
+          required: [id, title, artist, album]
+          properties:
+            id: {type: integer}
+            title: {type: string}
+            artist: {type: string}
+            album: {type: string}
+        - type: "null"
+
+    MyDataExport:
+      type: object
+      description: Fichier d'export des données d'un compte (`GET /me/export`). Des champs peuvent s'ajouter.
+      required: [format, formatVersion, exportedAt, server, account, settings, queue, favorites, playlists, history, devices, remoteShares]
+      properties:
+        format: {type: string, const: rengaine-export}
+        formatVersion: {type: integer, const: 1}
+        exportedAt: {$ref: "#/components/schemas/DateTime"}
+        server:
+          type: object
+          required: [name, url, apiVersion]
+          properties:
+            name: {type: string}
+            url: {type: string}
+            apiVersion: {type: string}
+        account:
+          type: object
+          required: [id, email, displayName, role, status, createdAt, lastLoginAt, requestMessage]
+          properties:
+            id: {type: integer}
+            email: {type: string}
+            displayName: {type: string}
+            role: {$ref: "#/components/schemas/Role"}
+            status: {type: string}
+            createdAt: {$ref: "#/components/schemas/DateTime"}
+            lastLoginAt:
+              oneOf: [{$ref: "#/components/schemas/DateTime"}, {type: "null"}]
+            requestMessage: {type: [string, "null"], description: Le mot laissé à l'admin lors de la demande de compte}
+        settings:
+          type: [object, "null"]
+          description: Le document de réglages tel qu'enregistré (`UserSettings`), null si jamais enregistré
+        queue:
+          type: [object, "null"]
+          required: [mode, currentIndex, positionMs, updatedAt, tracks]
+          properties:
+            mode: {type: string}
+            currentIndex: {type: [integer, "null"]}
+            positionMs: {type: integer}
+            updatedAt: {$ref: "#/components/schemas/DateTime"}
+            tracks:
+              type: array
+              items: {$ref: "#/components/schemas/ExportTrack"}
+        favorites:
+          type: array
+          items:
+            type: object
+            required: [type, id, name, addedAt]
+            properties:
+              type: {type: string, enum: [track, album, artist]}
+              id: {type: integer}
+              name: {type: [string, "null"], description: "Titre (piste, album) ou nom (artiste) ; null s'il n'existe plus"}
+              addedAt: {$ref: "#/components/schemas/DateTime"}
+        playlists:
+          type: array
+          items:
+            type: object
+            required: [id, name, description, shared, createdAt, updatedAt, tracks]
+            properties:
+              id: {type: integer}
+              name: {type: string}
+              description: {type: [string, "null"]}
+              shared: {type: boolean}
+              createdAt: {$ref: "#/components/schemas/DateTime"}
+              updatedAt: {$ref: "#/components/schemas/DateTime"}
+              tracks:
+                type: array
+                items:
+                  type: object
+                  required: [addedAt, track]
+                  properties:
+                    addedAt: {$ref: "#/components/schemas/DateTime"}
+                    track: {$ref: "#/components/schemas/ExportTrack"}
+        history:
+          type: array
+          description: Toutes les écoutes, de la plus ancienne à la plus récente
+          items:
+            type: object
+            required: [startedAt, playedMs, completed, skipped, context, track]
+            properties:
+              startedAt: {$ref: "#/components/schemas/DateTime"}
+              playedMs: {type: integer}
+              completed: {type: boolean}
+              skipped: {type: boolean}
+              context: {type: [string, "null"]}
+              track: {$ref: "#/components/schemas/ExportTrack"}
+        devices:
+          type: array
+          description: Sessions et jetons, y compris révoqués ou expirés
+          items:
+            type: object
+            required: [name, kind, createdAt, lastUsedAt, lastIp, userAgent, expiresAt, revokedAt]
+            properties:
+              name: {type: [string, "null"]}
+              kind: {type: string, enum: [web, app, agent]}
+              createdAt: {$ref: "#/components/schemas/DateTime"}
+              lastUsedAt:
+                oneOf: [{$ref: "#/components/schemas/DateTime"}, {type: "null"}]
+              lastIp: {type: [string, "null"]}
+              userAgent: {type: [string, "null"]}
+              expiresAt:
+                oneOf: [{$ref: "#/components/schemas/DateTime"}, {type: "null"}]
+              revokedAt:
+                oneOf: [{$ref: "#/components/schemas/DateTime"}, {type: "null"}]
+        remoteShares:
+          type: array
+          items:
+            type: object
+            required: [label, rights, createdAt, expiresAt, revokedAt, lastUsedAt]
+            properties:
+              label: {type: string}
+              rights: {$ref: "#/components/schemas/QueueShareRights"}
+              createdAt: {$ref: "#/components/schemas/DateTime"}
+              expiresAt: {$ref: "#/components/schemas/DateTime"}
+              revokedAt:
+                oneOf: [{$ref: "#/components/schemas/DateTime"}, {type: "null"}]
+              lastUsedAt:
+                oneOf: [{$ref: "#/components/schemas/DateTime"}, {type: "null"}]
+
+    UserRef:
+      type: object
+      description: |
+        Auteur d'une action (compte, agent compris). Compte supprimé depuis (`DELETE /me`) : `id` 0,
+        `displayName` « Compte supprimé », `role` `user`.
+      required: [id, displayName, role]
+      properties:
+        id: {type: integer, minimum: 0}
+        displayName: {type: string}
+        role: {$ref: "#/components/schemas/Role"}
+
+    MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user: {$ref: "#/components/schemas/User"}
+        csrfToken:
+          type: string
+          description: Seulement pour une session web
+        currentTokenId:
+          type: integer
+          description: Session ou jeton utilisé pour cette requête
+
+    LoginRequest:
+      type: object
+      required: [email, password, client]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, maxLength: 200}
+        client:
+          type: string
+          enum: [web, app]
+        deviceName:
+          $ref: "#/components/schemas/DeviceName"
+          description: "Obligatoire pour `client: app`"
+
+    LoginResponse:
+      type: object
+      required: [user]
+      properties:
+        user: {$ref: "#/components/schemas/User"}
+        csrfToken:
+          type: string
+          description: "`client: web` seulement"
+        token:
+          type: string
+          description: "`client: app` seulement ; affiché une seule fois"
+        tokenId: {type: integer}
+
+    TokenResponse:
+      type: object
+      required: [token, tokenId, user]
+      properties:
+        token:
+          type: string
+          description: Affiché une seule fois ; le serveur n'en garde que l'empreinte
+        tokenId: {type: integer}
+        user: {$ref: "#/components/schemas/User"}
+
+    RegisterRequest:
+      type: object
+      required: [email, displayName, password]
+      properties:
+        email: {type: string, format: email}
+        displayName: {$ref: "#/components/schemas/DisplayName"}
+        password: {$ref: "#/components/schemas/Password"}
+        message:
+          type: string
+          maxLength: 1000
+          description: Mot pour l'admin (qui êtes-vous ?)
+
+    Device:
+      type: object
+      required: [id, kind, name, prefix, createdAt, current]
+      properties:
+        id: {type: integer}
+        kind:
+          type: string
+          enum: [web, app, agent]
+        name: {type: string}
+        prefix:
+          type: string
+          description: Début du jeton, pour le reconnaître
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        lastUsedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+        lastIp: {type: [string, "null"]}
+        userAgent: {type: [string, "null"]}
+        expiresAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+        current:
+          type: boolean
+          description: C'est la session ou le jeton de cette requête
+
+    PairingCode:
+      type: object
+      required: [code, expiresAt, qrPayload]
+      properties:
+        code:
+          type: string
+          description: À saisir à la main si le QR ne peut pas être scanné
+          examples: [K7QF-2M9X]
+        expiresAt: {$ref: "#/components/schemas/DateTime"}
+        qrPayload:
+          type: string
+          description: |
+            Contenu du QR, que l'appli sait lire : `rengaine://pair?server=<adresse du serveur>&code=<code>`
+            (schéma `rengaine://`, depuis la 2.19.1 ; `musique://` avant, jamais utilisé par une appli).
+          examples: ["rengaine://pair?server=https%3A%2F%2Fmusique.example.org&code=K7QF-2M9X"]
+
+    AdminUser:
+      type: object
+      required: [id, email, displayName, role, status, createdAt]
+      properties:
+        id: {type: integer}
+        email: {type: string, format: email}
+        displayName: {type: string}
+        role: {$ref: "#/components/schemas/Role"}
+        status: {$ref: "#/components/schemas/UserStatus"}
+        requestMessage: {type: [string, "null"]}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        decidedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+        lastLoginAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+
+    AdminUserDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminUser"
+        - type: object
+          required: [devices]
+          properties:
+            devices:
+              type: array
+              items: {$ref: "#/components/schemas/Device"}
+
+    AdminUserPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/AdminUser"}
+
+    AdminUserCreate:
+      type: object
+      required: [email, displayName, role]
+      properties:
+        email: {type: string, format: email}
+        displayName: {$ref: "#/components/schemas/DisplayName"}
+        role: {$ref: "#/components/schemas/Role"}
+        password:
+          $ref: "#/components/schemas/Password"
+          description: Absent pour un compte agent (jeton seulement)
+
+    AdminUserUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        status: {$ref: "#/components/schemas/UserStatus"}
+        role: {$ref: "#/components/schemas/Role"}
+        displayName: {$ref: "#/components/schemas/DisplayName"}
+
+    ServerSettings:
+      type: object
+      required: [serverName, language, registrationOpen, pendingRequestsPerNetwork, remoteControlEnabled, realtimeService, assistant]
+      properties:
+        serverName: {type: string, maxLength: 100}
+        language:
+          $ref: "#/components/schemas/Language"
+          description: Langue du site pour tous les comptes (annoncée par `GET /server`)
+        registrationOpen: {type: boolean}
+        pendingRequestsPerNetwork:
+          type: integer
+          description: Demandes de compte en attente autorisées par IPv4 publique et par IPv6 /64
+          default: 2
+        remoteControlEnabled:
+          type: boolean
+          default: true
+          description: |
+            Télécommande partagée autorisée (FUT-02). La passer à `false` prévient les invités connectés et
+            les lecteurs (message `disabled`), refuse les routes de la télécommande (`503 realtime_unavailable`),
+            annonce `features.remoteControl = false` et arrête le hub temps réel ; les liens ne sont pas révoqués
+            et revivent quand on la rallume (avant leur expiration).
+        realtimeService:
+          type: string
+          enum: [running, stopped, absent]
+          readOnly: true
+          description: |
+            État du hub temps réel : `running` (répond), `stopped` (arrêté ou injoignable), `absent` (pas de
+            section `[mercure]`). Après un changement de `remoteControlEnabled`, la réponse attend jusqu'à 3 s que
+            le service ait suivi.
+        assistant:
+          readOnly: true
+          description: |
+            Modèle d'IA de la réorganisation lancée depuis l'admin (tâche `organize`, IA-04), ou `null` s'il
+            n'y en a pas. Il se configure dans la section `[ia]` de `rengaine.ini` (la clé n'est jamais renvoyée).
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [provider, model]
+              properties:
+                provider: {type: string, enum: [anthropic, openai]}
+                model: {type: string, examples: [claude-opus-5-5]}
+
+    ServerSettingsUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        serverName: {type: string, minLength: 1, maxLength: 100}
+        language: {$ref: "#/components/schemas/Language"}
+        registrationOpen: {type: boolean}
+        pendingRequestsPerNetwork: {type: integer, minimum: 1, maximum: 20}
+        remoteControlEnabled: {type: boolean}
+
+    # ---------------------------------------------------------------- Réglages
+
+    UserSettingsDocument:
+      type: object
+      required: [version, updatedAt, settings]
+      properties:
+        version: {type: integer}
+        updatedAt: {$ref: "#/components/schemas/DateTime"}
+        settings: {$ref: "#/components/schemas/UserSettings"}
+
+    UserSettings:
+      type: object
+      description: |
+        Réglages partagés entre le site et l'appli (CPT-04). Tous les champs sont présents en
+        lecture (valeurs par défaut comprises). Un client ignore les champs qu'il ne connaît pas
+        mais les **renvoie tels quels** à l'enregistrement, pour ne pas effacer les réglages
+        d'un client plus récent. À l'enregistrement, `infinite` et `random` peuvent manquer
+        (client antérieur) : ils gardent alors leur valeur par défaut.
+      required: [playback, continuous, interface, infinite, random]
+      additionalProperties: true
+      properties:
+        playback:
+          type: object
+          required: [normalization, targetLufs, preventClipping, crossfadeMs, crossfadeWithinAlbum, gapless, streamQuality]
+          additionalProperties: true
+          properties:
+            normalization:
+              type: string
+              enum: ["off", track, album, auto]
+              default: auto
+              description: |
+                `auto` = gain d'album quand on écoute un album dans l'ordre, gain de piste sinon
+                (aléatoire, file mélangée, lecture continue).
+            targetLufs:
+              type: number
+              minimum: -23
+              maximum: -8
+              default: -16
+              description: Volume visé ; `gain = targetLufs - loudnessLufs`
+            preventClipping:
+              type: boolean
+              default: true
+              description: Le gain est réduit si la crête dépasserait 0 dBTP
+            crossfadeMs:
+              type: integer
+              minimum: 0
+              maximum: 12000
+              default: 0
+              description: Durée du fondu enchaîné ; 0 = pas de fondu
+            crossfadeWithinAlbum:
+              type: boolean
+              default: false
+              description: Fondu aussi entre deux pistes consécutives d'un même album (non conseillé pour les albums live)
+            gapless:
+              type: boolean
+              default: true
+              description: Enchaînement sans blanc (piste suivante préchargée)
+            beatSync:
+              type: boolean
+              default: true
+              description: |
+                Fondu enchaîné calé sur le tempo (LEC-06) : quand les deux pistes ont une grille des
+                temps et des tempos proches (6 % au plus, ou le double, ou la moitié), le fondu dure un
+                nombre entier de mesures, commence sur un temps, et la suivante part sur un temps, ralentie
+                ou accélérée (sans changer la hauteur) pour suivre la première, puis revient à sa vitesse.
+            streamQuality:
+              type: object
+              required: [wifi, mobile]
+              properties:
+                wifi: {$ref: "#/components/schemas/StreamQuality"}
+                mobile: {$ref: "#/components/schemas/StreamQuality"}
+        continuous:
+          type: object
+          description: Règles de la lecture continue intelligente (LEC-03)
+          required: [enabled, genres, excludedGenres, favoritesWeight, harmonicMixing, bpmTolerancePercent, energyTrend, noRepeatHours, artistSpacing]
+          additionalProperties: true
+          properties:
+            enabled:
+              type: boolean
+              default: false
+              description: Quand la file se termine, continuer avec des pistes choisies
+            genres:
+              type: array
+              items: {type: integer}
+              default: []
+              description: Genres préférés (vide = tous)
+            excludedGenres:
+              type: array
+              items: {type: integer}
+              default: []
+            favoritesWeight:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 0.3
+              description: 0 = ignorer les favoris, 1 = seulement des favoris
+            harmonicMixing:
+              type: boolean
+              default: false
+              description: Enchaîner des clés compatibles (même numéro Camelot, ±1, ou A↔B)
+            bpmTolerancePercent:
+              type: [integer, "null"]
+              minimum: 0
+              maximum: 50
+              default: null
+              description: Écart de BPM accepté avec la piste précédente ; null = pas de contrainte
+            energyTrend:
+              type: string
+              enum: [any, steady, rising, falling]
+              default: any
+            noRepeatHours:
+              type: integer
+              minimum: 0
+              maximum: 720
+              default: 24
+              description: Ne pas rejouer une piste écoutée depuis moins de N heures
+            artistSpacing:
+              type: integer
+              minimum: 0
+              maximum: 20
+              default: 3
+              description: Nombre minimal de pistes entre deux pistes d'un même artiste
+        interface:
+          type: object
+          required: [theme]
+          additionalProperties: true
+          properties:
+            theme:
+              type: string
+              enum: [auto, light, dark]
+              default: auto
+            background:
+              type: boolean
+              default: true
+              description: |
+                Afficher une image de fond (tirée au hasard parmi celles que l'admin a activées).
+                Facultatif à l'enregistrement : absent, il reprend sa valeur par défaut.
+        infinite:
+          type: object
+          description: |
+            Mode infini (WEB-05) : quand la file arrive à sa fin, le lecteur la complète avec des pistes
+            au hasard (`GET /random/tracks`) du genre de la piste en cours ; si ce genre est épuisé,
+            de toute la bibliothèque. Plus simple que la lecture continue (`continuous`, LEC-03).
+          required: [enabled]
+          additionalProperties: true
+          properties:
+            enabled: {type: boolean, default: true}
+        random:
+          type: object
+          description: |
+            Dernier tirage de la page « Aléatoire » : le site et l'appli le reprennent. Se traduit en
+            `GET /random/tracks?genre=…&excludeAlbum=…&count=…`.
+          required: [genreIds, excludedAlbumIds, count]
+          additionalProperties: true
+          properties:
+            genreIds:
+              type: array
+              maxItems: 500
+              items: {type: integer}
+              default: []
+              description: Genres tirés (vide = tous)
+            excludedAlbumIds:
+              type: array
+              maxItems: 500
+              items: {type: integer}
+              default: []
+              description: Albums décochés dans ces genres
+            count: {type: integer, minimum: 1, maximum: 200, default: 100}
+
+    StreamQuality:
+      type: string
+      enum: [original, high, medium, low]
+      default: original
+      description: |
+        `original` = fichier tel quel ; `high` = Opus 256 kbit/s ; `medium` = Opus 160 ;
+        `low` = Opus 96. Pour un client qui ne lit pas l'Opus : MP3 320, 192 et 128.
+        Sans conversion sur le serveur (`features.transcoding = false`), tout est servi en `original`.
+
+    # ---------------------------------------------------------------- Catalogue
+
+    PlaylistInput:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: [string, "null"], maxLength: 1000}
+        shared: {type: boolean, default: false}
+        trackIds:
+          type: array
+          maxItems: 5000
+          description: Pistes de départ, dans l'ordre (ex. la file d'attente, ou une playlist copiée)
+          items: {type: integer}
+
+    PlaylistSummary:
+      type: object
+      required: [id, name, description, owner, mine, shared, trackCount, durationMs, coverUrls, createdAt, updatedAt]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        description: {type: [string, "null"]}
+        owner:
+          type: object
+          required: [id, displayName]
+          properties:
+            id: {type: integer}
+            displayName: {type: string}
+        mine: {type: boolean, description: Créée par le compte connecté (lui seul la modifie)}
+        shared: {type: boolean}
+        trackCount: {type: integer}
+        durationMs: {type: integer}
+        coverUrls:
+          type: array
+          maxItems: 4
+          description: Pochettes des premiers albums différents, pour une mosaïque
+          items: {type: string}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        updatedAt: {$ref: "#/components/schemas/DateTime"}
+
+    PlaylistDetail:
+      allOf:
+        - $ref: "#/components/schemas/PlaylistSummary"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                required: [id, position, addedAt, track]
+                properties:
+                  id: {type: integer, description: Identifiant de l'entrée (une piste peut figurer deux fois)}
+                  position: {type: integer}
+                  addedAt: {$ref: "#/components/schemas/DateTime"}
+                  track: {$ref: "#/components/schemas/Track"}
+
+    ArtistRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+
+    AlbumRef:
+      type: object
+      required: [id, title]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+
+    GenreRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+
+    Genre:
+      type: object
+      required: [id, name, parentId, albumCount, trackCount, aliases]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        parentId: {type: [integer, "null"]}
+        albumCount: {type: integer}
+        trackCount:
+          type: integer
+          description: Pistes dont c'est un genre effectif
+        aliases:
+          type: array
+          description: Valeurs de tag rattachées à ce genre
+          items: {type: string}
+          examples: [["Hip-Hop/Rap", "Hip Hop"]]
+
+    GenreInput:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+        parentId: {type: [integer, "null"]}
+
+    GenreAlias:
+      type: object
+      required: [alias, genre, trackCount, firstSeenAt]
+      properties:
+        alias:
+          type: string
+          description: Valeur telle qu'elle figure dans les tags
+        genre:
+          description: Genre rattaché ; `null` = valeur pas encore rattachée
+          oneOf:
+            - $ref: "#/components/schemas/GenreRef"
+            - type: "null"
+        trackCount: {type: integer}
+        firstSeenAt: {$ref: "#/components/schemas/DateTime"}
+
+    GenreAliasPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/GenreAlias"}
+
+    CollectionKind:
+      type: string
+      enum: [category, mood, collection]
+
+    Collection:
+      type: object
+      required: [id, kind, name, albumCount, coverUrls]
+      properties:
+        id: {type: integer}
+        kind: {$ref: "#/components/schemas/CollectionKind"}
+        name: {type: string}
+        description: {type: [string, "null"]}
+        parentId: {type: [integer, "null"]}
+        albumCount: {type: integer}
+        coverUrls:
+          type: array
+          maxItems: 4
+          description: Pochettes des premiers albums (mosaïque)
+          items: {type: string}
+
+    CollectionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Collection"
+        - type: object
+          required: [albums]
+          properties:
+            albums:
+              type: array
+              items: {$ref: "#/components/schemas/AlbumSummary"}
+
+    CollectionInput:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+        description: {type: [string, "null"], maxLength: 1000}
+
+    MoodId:
+      type: string
+      enum: [calme, concentration, energique, danser]
+
+    Mood:
+      type: object
+      required: [id, name, description, trackCount]
+      properties:
+        id: {$ref: "#/components/schemas/MoodId"}
+        name: {type: string, examples: ["Pour danser"]}
+        description: {type: string}
+        trackCount: {type: integer}
+
+    Decade:
+      type: object
+      required: [decade, albumCount, trackCount]
+      properties:
+        decade: {type: integer, description: "Première année : 1980 pour les années 80", examples: [1980]}
+        albumCount: {type: integer}
+        trackCount: {type: integer}
+
+    CoverUrl:
+      type: [string, "null"]
+      description: |
+        Chemin de l'image, sans taille : le client ajoute `?size=s|m|l`. `null` = pas d'image ;
+        le client affiche alors son image par défaut.
+      examples: [/api/v2/images/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08]
+
+    AlbumSummary:
+      type: object
+      required: [id, title, kind, artist, artistName, year, trackCount, discCount, durationMs, hasLossless, coverUrl, genres, addedAt, favorite]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        kind:
+          type: string
+          enum: [album, loose]
+          description: |
+            `loose` = dossier de pistes en vrac, sans album commun dans les tags (le titre est
+            alors le nom du dossier). Le client peut l'afficher autrement qu'un album.
+        artist:
+          description: Artiste de l'album ; `null` pour une compilation d'artistes divers
+          oneOf:
+            - $ref: "#/components/schemas/ArtistRef"
+            - type: "null"
+        artistName:
+          type: string
+          description: Nom à afficher (« Artistes divers » pour une compilation)
+        year: {type: [integer, "null"]}
+        trackCount: {type: integer}
+        discCount: {type: integer}
+        durationMs: {type: integer}
+        hasLossless: {type: boolean}
+        coverUrl: {$ref: "#/components/schemas/CoverUrl"}
+        genres:
+          type: array
+          items: {$ref: "#/components/schemas/GenreRef"}
+        addedAt: {$ref: "#/components/schemas/DateTime"}
+        favorite: {type: boolean}
+
+    AlbumDetail:
+      allOf:
+        - $ref: "#/components/schemas/AlbumSummary"
+        - type: object
+          required: [tracks, loudness, collections]
+          properties:
+            isCompilation: {type: boolean}
+            loudness: {$ref: "#/components/schemas/Loudness"}
+            collections:
+              type: array
+              items:
+                type: object
+                required: [id, kind, name]
+                properties:
+                  id: {type: integer}
+                  kind: {$ref: "#/components/schemas/CollectionKind"}
+                  name: {type: string}
+            tracks:
+              type: array
+              description: Triées par disque puis par numéro de piste
+              items: {$ref: "#/components/schemas/Track"}
+
+    AlbumPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/AlbumSummary"}
+
+    ArtistSummary:
+      type: object
+      required: [id, name, albumCount, imageUrl]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        sortName: {type: [string, "null"]}
+        albumCount: {type: integer}
+        imageUrl: {$ref: "#/components/schemas/CoverUrl"}
+
+    ArtistDetail:
+      allOf:
+        - $ref: "#/components/schemas/ArtistSummary"
+        - type: object
+          required: [albums, appearsOn, favorite]
+          properties:
+            favorite: {type: boolean}
+            albums:
+              type: array
+              description: Albums dont il est l'artiste principal
+              items: {$ref: "#/components/schemas/AlbumSummary"}
+            appearsOn:
+              type: array
+              description: Autres albums où il apparaît (compilations, featurings)
+              items: {$ref: "#/components/schemas/AlbumSummary"}
+
+    ArtistPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/ArtistSummary"}
+
+    AudioFormat:
+      type: object
+      required: [format, lossless, sizeBytes]
+      properties:
+        format:
+          type: string
+          enum: [mp3, flac, opus, vorbis, aac, alac, wav, other]
+        lossless: {type: boolean}
+        bitrateKbps: {type: [integer, "null"]}
+        sampleRateHz: {type: [integer, "null"]}
+        bitDepth: {type: [integer, "null"]}
+        channels: {type: [integer, "null"]}
+        sizeBytes: {type: integer}
+
+    Loudness:
+      type: object
+      description: Mesure EBU R128 ; champs `null` tant que l'analyse n'est pas faite
+      required: [lufs, truePeakDbtp]
+      properties:
+        lufs: {type: [number, "null"], examples: [-8.4]}
+        truePeakDbtp: {type: [number, "null"], examples: [0.3]}
+
+    PlaybackInfo:
+      type: object
+      description: |
+        Ce qu'il faut au lecteur pour la normalisation et le fondu (API-06). Chaque valeur est
+        `null` tant que l'analyse correspondante n'a pas tourné.
+      required: [track, album, audioStartMs, audioEndMs, bpm, key, camelot, energy]
+      properties:
+        track: {$ref: "#/components/schemas/Loudness"}
+        album: {$ref: "#/components/schemas/Loudness"}
+        audioStartMs:
+          type: [integer, "null"]
+          description: Fin du silence de début
+        audioEndMs:
+          type: [integer, "null"]
+          description: Début du silence de fin ; le fondu commence au plus tard ici
+        bpm: {type: [number, "null"]}
+        key:
+          type: [string, "null"]
+          description: Notation anglaise (`Am`, `F#`)
+        camelot:
+          oneOf:
+            - $ref: "#/components/schemas/Camelot"
+            - type: "null"
+        energy:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: |
+            Énergie perçue (AUD-06) : volume moyen, densité d'attaques et brillance du son. Calme près
+            de 0, intense près de 1. Approximative : sert à orienter la lecture continue.
+        danceability:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: Dansabilité (AUD-06, algorithme DFA d'Essentia ramené entre 0 et 1)
+        beatGrid:
+          description: |
+            Grilles des temps (LEC-06) relevées sur les 30 premières et les 30 dernières secondes : un
+            humain ne garde pas un tempo exact sur tout un morceau, mais il le tient sur une demi-minute.
+            Chaque bout vaut `null` si les temps détectés s'écartent de la grille (tempo libre, fondu
+            sans rythme). Sert à caler le fondu enchaîné sur le tempo. Absent ou `null` tant que
+            l'analyse n'a pas tourné, ou si aucun bout n'a de grille.
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [intro, outro]
+              properties:
+                intro:
+                  oneOf:
+                    - $ref: "#/components/schemas/BeatGrid"
+                    - type: "null"
+                outro:
+                  oneOf:
+                    - $ref: "#/components/schemas/BeatGrid"
+                    - type: "null"
+
+    BeatGrid:
+      type: object
+      description: "Grille régulière : un temps tombe à `offsetMs + n × 60000 / bpm` (n entier)"
+      required: [bpm, offsetMs]
+      properties:
+        bpm: {type: number, examples: [124.062]}
+        offsetMs:
+          type: number
+          minimum: 0
+          description: Position du premier temps de la grille (le plus proche du début du fichier)
+          examples: [312.5]
+
+    Waveform:
+      type: object
+      required: [trackId, durationMs, stepMs, levels]
+      properties:
+        trackId: {type: integer}
+        durationMs: {type: integer}
+        stepMs:
+          type: number
+          description: Durée d'une tranche ; la dernière peut être plus courte
+        levels:
+          type: array
+          description: Niveau RMS de chaque tranche en dBFS (de -63,75 à 0, par pas de 0,25) ; `null` = silence
+          items: {type: [number, "null"], maximum: 0}
+
+    Track:
+      type: object
+      required: [id, title, artistCredit, artists, album, genres, discNumber, trackNumber, durationMs, coverUrl, streamUrl, formats, playback, favorite, available]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        artistCredit:
+          type: string
+          description: Texte affiché (« Gorillaz feat. Kali Uchis »)
+        artists:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/ArtistRef"
+              - type: object
+                required: [role]
+                properties:
+                  role:
+                    type: string
+                    enum: [main, featured, remixer]
+        album:
+          allOf:
+            - $ref: "#/components/schemas/AlbumRef"
+            - type: object
+              properties:
+                artistName: {type: string}
+                year: {type: [integer, "null"]}
+        genres:
+          type: array
+          description: |
+            Genres **effectifs** : ceux de la piste s'il y en a (compilation, correction),
+            sinon ceux de l'album.
+          items:
+            allOf:
+              - $ref: "#/components/schemas/GenreRef"
+              - type: object
+                required: [inherited]
+                properties:
+                  inherited:
+                    type: boolean
+                    description: "`true` = repris de l'album"
+        discNumber: {type: integer}
+        trackNumber: {type: [integer, "null"]}
+        durationMs: {type: integer}
+        coverUrl: {$ref: "#/components/schemas/CoverUrl"}
+        streamUrl:
+          type: string
+          examples: [/api/v2/tracks/1234/stream]
+        formats:
+          type: array
+          description: Fichiers disponibles, le meilleur en premier (c'est lui que sert `original`)
+          items: {$ref: "#/components/schemas/AudioFormat"}
+        playback: {$ref: "#/components/schemas/PlaybackInfo"}
+        favorite: {type: boolean}
+        available:
+          type: boolean
+          description: "`false` si le fichier a disparu du stockage (piste gardée pour l'historique)"
+
+    TrackPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/Track"}
+
+    TrackList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Track"}
+
+    SearchResults:
+      type: object
+      required: [artists, albums, tracks]
+      properties:
+        artists:
+          type: array
+          items: {$ref: "#/components/schemas/ArtistSummary"}
+        albums:
+          type: array
+          items: {$ref: "#/components/schemas/AlbumSummary"}
+        tracks:
+          type: array
+          items: {$ref: "#/components/schemas/Track"}
+
+    # ---------------------------------------------------------------- Lecture
+
+    QueueMode:
+      type: string
+      enum: [normal, repeat_all, repeat_one, continuous]
+
+    PlayQueueInput:
+      type: object
+      required: [trackIds, currentIndex, positionMs, mode]
+      properties:
+        trackIds:
+          type: array
+          maxItems: 5000
+          items: {type: integer}
+        currentIndex:
+          type: [integer, "null"]
+          description: Position dans `trackIds` de la piste en cours ; null = rien en cours
+        positionMs: {type: integer, minimum: 0}
+        mode: {$ref: "#/components/schemas/QueueMode"}
+
+    PlayQueue:
+      allOf:
+        - $ref: "#/components/schemas/PlayQueueInput"
+        - type: object
+          required: [version, updatedAt, tracks]
+          properties:
+            version: {type: integer}
+            updatedAt: {$ref: "#/components/schemas/DateTime"}
+            updatedBy:
+              type: [string, "null"]
+              description: Nom de l'appareil qui l'a enregistrée en dernier
+            tracks:
+              type: array
+              description: Pistes de `trackIds`, dans le même ordre
+              items: {$ref: "#/components/schemas/Track"}
+
+    # ---------------------------------------------------------------- Télécommande (FUT-02)
+
+    QueueShareRights:
+      type: object
+      description: Ce que peut faire l'invité, en plus de voir la file et la piste en cours
+      required: [add, edit, control]
+      properties:
+        add: {type: boolean, description: Chercher et ajouter des pistes ou des albums}
+        edit: {type: boolean, description: Déplacer et retirer des pistes de la file}
+        control: {type: boolean, description: "Lecture, pause, piste suivante"}
+
+    QueueShareInput:
+      type: object
+      required: [hours, rights]
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Pour qui (« Soirée chez Paul ») ; par défaut « Invité »
+        hours: {type: integer, minimum: 1, maximum: 168, description: Durée de validité}
+        rights: {$ref: "#/components/schemas/QueueShareRights"}
+
+    QueueShare:
+      type: object
+      required: [id, label, prefix, rights, createdAt, expiresAt, lastUsedAt]
+      properties:
+        id: {type: integer}
+        label: {type: string}
+        prefix: {type: string, description: "Début du secret, pour reconnaître le lien"}
+        rights: {$ref: "#/components/schemas/QueueShareRights"}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        expiresAt: {$ref: "#/components/schemas/DateTime"}
+        lastUsedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+
+    QueueShareCreated:
+      allOf:
+        - $ref: "#/components/schemas/QueueShare"
+        - type: object
+          required: [token, url]
+          properties:
+            token: {type: string, description: Secret du lien (montré une seule fois)}
+            url: {type: string, description: "Adresse à donner : `<site>/telecommande#<token>`"}
+
+    RealtimeChannel:
+      type: object
+      description: |
+        Abonnement au hub Mercure : `GET <hubUrl>?match=<topic>` (un `match` par sujet), en-tête
+        `Authorization: Bearer <token>`, réponse en flux SSE. Le hub ferme le flux à l'expiration du jeton.
+        Chaque message (`data` de l'événement) est un objet JSON dont `type` vaut :
+          - `command` (lecteur) : `{type, target, by, command, tracks}`, une commande d'invité
+            (`RemoteCommand`), à appliquer seulement si `target` est la `deviceKey` de ce lecteur ;
+            pour `add`, `tracks` donne les pistes complètes (`Track`), dans l'ordre ;
+          - `shares` (lecteur) : un lien a été créé ou révoqué, relire `GET /me/realtime` ;
+          - `changed` (invité) : la file ou le lecteur ont changé, relire `GET /remote` ;
+          - `revoked` (invité) : le lien n'est plus valable ;
+          - `disabled` (invité et lecteur) : l'admin a désactivé la télécommande, ne plus s'abonner.
+      required: [hubUrl, topics, token, expiresAt]
+      properties:
+        hubUrl: {type: string, examples: ["https://musique.example.org/.well-known/mercure"]}
+        topics:
+          type: array
+          items: {type: string}
+        token: {type: string}
+        expiresAt: {$ref: "#/components/schemas/DateTime"}
+        sharesActive:
+          type: boolean
+          description: "(lecteur) Au moins un lien valable : envoyer `PUT /me/player`"
+
+    PlayerReport:
+      type: object
+      required: [deviceKey, trackId, playing, positionMs, queueVersion]
+      properties:
+        deviceKey:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{8,64}$"
+          description: Identifiant tiré au hasard par chaque lecteur (onglet)
+        trackId: {type: [integer, "null"]}
+        playing: {type: boolean}
+        positionMs: {type: integer, minimum: 0}
+        queueVersion: {type: integer, minimum: 0, description: Version de la file enregistrée que le lecteur connaît}
+        volume:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Volume du lecteur en pourcentage (0 si coupé) ; absent pour un lecteur qui ne le donne pas
+
+    RemoteCommand:
+      type: object
+      description: |
+        - `add` : `trackIds` ou `albumId` (toutes ses pistes), `where` = `next` (après la piste en
+          cours), `end`, ou `now` (après la piste en cours, et la lecture y passe aussitôt) ; droit `add`,
+          plus `control` pour `now`.
+        - `move` : l'élément `from` (dont la piste est `trackId`) va en `to` ; droit `edit`.
+        - `remove` : l'élément `index` (dont la piste est `trackId`) ; droit `edit`.
+        - `play`, `pause`, `next` : droit `control`.
+        - `jump` : jouer tout de suite l'élément `index` (dont la piste est `trackId`), sans changer
+          l'ordre de la file ; droit `control`.
+        - `volume` : régler le volume du lecteur à `volume` % (0 à 100 ; remet le son s'il était
+          coupé) ; droit `control`.
+        Les positions sont celles de la file reçue par `GET /remote` ; le lecteur ignore une
+        commande dont la piste ne correspond plus (file changée entre-temps).
+      required: [type]
+      properties:
+        type: {type: string, enum: [add, move, remove, play, pause, next, jump, volume]}
+        trackIds:
+          type: array
+          maxItems: 200
+          items: {type: integer, minimum: 1}
+        albumId: {type: integer, minimum: 1}
+        where: {type: string, enum: [next, end, now], description: "Par défaut `end`"}
+        from: {type: integer, minimum: 0}
+        to: {type: integer, minimum: 0}
+        index: {type: integer, minimum: 0}
+        trackId: {type: integer, minimum: 1}
+        volume: {type: integer, minimum: 0, maximum: 100, description: "Pour `volume` : nouveau volume en pourcentage"}
+        name:
+          type: string
+          maxLength: 40
+          description: |
+            Prénom donné par l'invité (un même lien peut servir à plusieurs personnes). Le lecteur
+            l'affiche à la place du nom du lien (`by` du message `command`) ; vide ou absent : nom du lien.
+
+    RemoteState:
+      type: object
+      required: [share, player, queue, csrfToken, channel]
+      properties:
+        share:
+          type: object
+          required: [label, ownerName, rights, expiresAt]
+          properties:
+            label: {type: string}
+            ownerName: {type: string, description: Nom affiché du compte dont on pilote la file}
+            rights: {$ref: "#/components/schemas/QueueShareRights"}
+            expiresAt: {$ref: "#/components/schemas/DateTime"}
+        player:
+          type: object
+          required: [online, playing, trackId, positionMs, reportedAt, volume]
+          properties:
+            online: {type: boolean, description: Un lecteur de ce compte a donné des nouvelles depuis moins de 75 s}
+            playing: {type: boolean}
+            trackId: {type: [integer, "null"]}
+            positionMs: {type: integer, description: Position au moment du rapport}
+            volume:
+              type: [integer, "null"]
+              minimum: 0
+              maximum: 100
+              description: Volume du lecteur en pourcentage (0 si coupé) ; null si le lecteur ne l'a pas donné
+            reportedAt:
+              oneOf:
+                - $ref: "#/components/schemas/DateTime"
+                - type: "null"
+        queue:
+          type: object
+          required: [version, currentIndex, tracks]
+          properties:
+            version: {type: integer}
+            currentIndex: {type: [integer, "null"]}
+            tracks:
+              type: array
+              description: Pistes de la file, dans l'ordre (doublons compris)
+              items: {$ref: "#/components/schemas/Track"}
+        csrfToken: {type: string, description: "À renvoyer dans `X-CSRF-Token` pour `POST /remote/commands`"}
+        channel: {$ref: "#/components/schemas/RealtimeChannel"}
+
+    FavoriteType:
+      type: string
+      enum: [track, album, artist]
+
+    FavoritePage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                required: [type, addedAt]
+                properties:
+                  type: {$ref: "#/components/schemas/FavoriteType"}
+                  addedAt: {$ref: "#/components/schemas/DateTime"}
+                  track: {$ref: "#/components/schemas/Track"}
+                  album: {$ref: "#/components/schemas/AlbumSummary"}
+                  artist: {$ref: "#/components/schemas/ArtistSummary"}
+
+    PlayContext:
+      type: string
+      enum: [album, artist, search, random, continuous, queue, other]
+
+    PlayInput:
+      type: object
+      required: [trackId, startedAt, playedMs]
+      properties:
+        trackId: {type: integer}
+        startedAt: {$ref: "#/components/schemas/DateTime"}
+        playedMs: {type: integer, minimum: 0}
+        completed: {type: boolean, default: false}
+        skipped: {type: boolean, default: false}
+        context: {$ref: "#/components/schemas/PlayContext"}
+
+    PlayHistoryPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                required: [id, startedAt, playedMs, completed, skipped, context, track]
+                properties:
+                  id:
+                    type: integer
+                    description: Identifiant de l'écoute (pour l'effacer, depuis 2.26.0)
+                  startedAt: {$ref: "#/components/schemas/DateTime"}
+                  playedMs: {type: integer}
+                  completed: {type: boolean}
+                  skipped: {type: boolean}
+                  context: {$ref: "#/components/schemas/PlayContext"}
+                  device: {type: [string, "null"]}
+                  track: {$ref: "#/components/schemas/Track"}
+
+    NextTracksRequest:
+      type: object
+      required: [count]
+      properties:
+        currentTrackId:
+          type: [integer, "null"]
+          description: Dernière piste jouée ; sert de référence pour la clé, le BPM, l'énergie
+        recentTrackIds:
+          type: array
+          maxItems: 200
+          items: {type: integer}
+          description: Pistes déjà dans la file, à ne pas proposer
+        count: {type: integer, minimum: 1, maximum: 50, default: 10}
+        overrides:
+          type: object
+          description: Remplace certaines règles `continuous` des réglages pour cette demande
+          additionalProperties: true
+          properties:
+            genres:
+              type: array
+              items: {type: integer}
+            harmonicMixing: {type: boolean}
+            bpmTolerancePercent: {type: [integer, "null"]}
+            energyTrend:
+              type: string
+              enum: [any, steady, rising, falling]
+            mood: {$ref: "#/components/schemas/MoodId"}
+            yearFrom: {type: integer}
+            yearTo: {type: integer}
+            collection: {type: integer}
+
+    # ---------------------------------------------------------------- Admin bibliothèque
+
+    ChangeEntityType:
+      type: string
+      enum: [album, track, artist, genreAlias]
+
+    AlbumPatch:
+      type: object
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 255}
+        year: {type: [integer, "null"], minimum: 1000, maximum: 2100}
+        albumArtist:
+          type: [string, "null"]
+          description: Nom de l'artiste (créé s'il n'existe pas) ; null = artistes divers
+        isCompilation: {type: boolean}
+        genreIds:
+          type: array
+          description: Remplace la liste des genres de l'album
+          items: {type: integer}
+        collectionIds:
+          type: array
+          items: {type: integer}
+        coverImageHash:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{64}$"
+          description: Choisir une autre image déjà connue comme jaquette
+
+    TrackPatch:
+      type: object
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 255}
+        artistCredit: {type: [string, "null"], maxLength: 500}
+        discNumber: {type: integer, minimum: 1, maximum: 99}
+        trackNumber: {type: [integer, "null"], minimum: 0, maximum: 999}
+        bpm: {type: [number, "null"], minimum: 20, maximum: 300}
+        key:
+          type: [string, "null"]
+          pattern: "^[A-G][#b]?m?$"
+        genreIds:
+          type: [array, "null"]
+          items: {type: integer}
+          description: Genres propres à la piste ; `null` = reprendre ceux de l'album
+        albumId:
+          type: integer
+          description: Déplacer la piste dans un autre album (séparer ou regrouper des albums)
+
+    ArtistPatch:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 255}
+        sortName: {type: [string, "null"], maxLength: 255}
+
+    AdminAlbumDetail:
+      allOf:
+        - $ref: "#/components/schemas/AlbumDetail"
+        - type: object
+          required: [sourceDir, files, activeCorrections]
+          properties:
+            sourceDir: {type: string, description: Dossier dans le stockage}
+            files:
+              type: array
+              items:
+                type: object
+                required: [trackId, storageKey, format, sizeBytes]
+                properties:
+                  trackId: {type: integer}
+                  storageKey: {type: string}
+                  format: {type: string}
+                  sizeBytes: {type: integer}
+                  tags:
+                    type: object
+                    description: Tags bruts lus par ffprobe
+                    additionalProperties: true
+            activeCorrections:
+              type: array
+              items: {$ref: "#/components/schemas/Correction"}
+
+    CorrectionStatus:
+      type: string
+      enum: [proposed, active, rejected, reverted]
+
+    Correction:
+      type: object
+      required: [id, entityType, entityId, field, value, previousValue, status, createdBy, createdAt]
+      properties:
+        id: {type: integer}
+        entityType: {$ref: "#/components/schemas/ChangeEntityType"}
+        entityId:
+          type: [integer, "null"]
+          description: "`null` pour `genreAlias` (voir `alias`)"
+        alias:
+          type: string
+          description: "Valeur de tag, pour `entityType: genreAlias`"
+        field: {type: string, examples: [year]}
+        value: {description: Nouvelle valeur (type selon le champ)}
+        previousValue: {description: Valeur avant la correction}
+        status: {$ref: "#/components/schemas/CorrectionStatus"}
+        changeSetId: {type: [integer, "null"]}
+        reason:
+          type: [string, "null"]
+          description: Explication de l'auteur (proposition de l'agent)
+        createdBy: {$ref: "#/components/schemas/UserRef"}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        revertedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+
+    CorrectionPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/Correction"}
+
+    ChangeInput:
+      type: object
+      required: [entityType, field, value]
+      properties:
+        entityType: {$ref: "#/components/schemas/ChangeEntityType"}
+        entityId:
+          type: integer
+          description: Obligatoire sauf pour `genreAlias`
+        alias:
+          type: string
+          description: "Seulement pour `entityType: genreAlias`"
+        field:
+          type: string
+          description: |
+            Mêmes champs que `AlbumPatch` (sauf `collectionIds`), `TrackPatch` et `ArtistPatch`
+            (ex. `genreIds`, `year`, `albumArtist`, `title`, `albumId`). En plus, pour un artiste,
+            `mergedInto` (identifiant d'un autre artiste) le fusionne dans celui-ci. Pour rattacher
+            une valeur de tag à un genre : `entityType: genreAlias`, `field: genreId`, `alias` à la
+            place de `entityId`.
+        value: {description: Nouvelle valeur}
+        reason:
+          type: string
+          maxLength: 1000
+          description: Explication de l'agent, affichée à l'admin
+
+    ChangeSetStatus:
+      type: string
+      enum: [draft, pending, applied, rejected, reverted]
+
+    ChangeSetInput:
+      type: object
+      required: [title, changes]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 255}
+        description: {type: string, maxLength: 10000}
+        changes:
+          type: array
+          minItems: 1
+          maxItems: 2000
+          items: {$ref: "#/components/schemas/ChangeInput"}
+
+    ChangeSet:
+      type: object
+      required: [id, title, status, createdBy, createdAt, changeCount]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        description: {type: [string, "null"]}
+        status: {$ref: "#/components/schemas/ChangeSetStatus"}
+        createdBy: {$ref: "#/components/schemas/UserRef"}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        decidedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+        decidedBy:
+          oneOf:
+            - $ref: "#/components/schemas/UserRef"
+            - type: "null"
+        changeCount: {type: integer}
+        changes:
+          type: array
+          description: Présent dans le détail d'un lot
+          items:
+            allOf:
+              - $ref: "#/components/schemas/ChangeInput"
+              - type: object
+                required: [currentValue, correctionId, status, previousValue]
+                properties:
+                  label:
+                    type: string
+                    description: "Nom lisible de l'élément (« Titre — Artiste » pour un album ou une piste, nom d'un artiste), depuis 2.27.0"
+                  currentValue: {description: "Valeur actuelle, pour comparer"}
+                  previousValue: {description: "Valeur au moment de la proposition (ou de l'application)"}
+                  correctionId: {type: integer}
+                  status: {$ref: "#/components/schemas/CorrectionStatus"}
+
+    McpRequest:
+      type: object
+      description: Message JSON-RPC 2.0 (un seul par requête)
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc: {const: "2.0"}
+        id:
+          type: [integer, string]
+          description: Absent pour une notification
+        method:
+          type: string
+          examples: [tools/call]
+        params:
+          type: object
+          additionalProperties: true
+
+    McpResponse:
+      type: object
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc: {const: "2.0"}
+        id: {type: [integer, string, "null"]}
+        result:
+          type: object
+          additionalProperties: true
+          description: |
+            Selon la méthode. `tools/call` : `content` (un bloc `text` contenant la réponse JSON de la
+            route), et `isError: true` si l'outil a échoué.
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: integer
+              description: "`-32600` message invalide, `-32601` méthode inconnue, `-32602` outil ou paramètres inconnus"
+            message: {type: string}
+
+    ChangeSetPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/ChangeSet"}
+
+    # ---------------------------------------------------------------- Tâches et journaux
+
+    JobType:
+      type: string
+      enum: [index, analyze, inbox, thumbnails, import, mail, dedup, purge, organize]
+
+    JobStatus:
+      type: string
+      enum: [queued, running, done, failed, cancelled]
+
+    JobInput:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [index, analyze, import, inbox, dedup, organize]
+          description: |
+            Seules ces tâches se lancent à la main. `inbox` range les albums déposés dans `inbox/`
+            (ceux qui n'ont pas bougé depuis 10 min) puis indexe ceux qui ont été rangés.
+            `dedup` retire les MP3 en double d'un album (`params.albumId`, voir `/admin/duplicates`) :
+            ils sont déplacés dans la corbeille du stockage, pas supprimés.
+            `organize` (IA-04) confie la consigne `params.instructions` au modèle configuré sur le
+            serveur (`assistant` dans les réglages du serveur) : il travaille avec les outils du serveur
+            MCP, sous le nom du premier compte agent actif, et ne peut que **proposer** des lots
+            (`/admin/change-sets`, statut `pending`). Le compte rendu arrive dans `summary`. `409` si
+            aucune IA n'est configurée ou s'il n'y a pas de compte agent.
+        params:
+          type: object
+          additionalProperties: true
+          properties:
+            prefix:
+              type: string
+              description: Ne traiter qu'un dossier du stockage
+            force:
+              type: boolean
+              description: Relire même les fichiers inchangés
+            albumId:
+              type: integer
+              description: "`dedup` (obligatoire) : l'album dont on retire les MP3 en double"
+            instructions:
+              type: string
+              minLength: 1
+              maxLength: 4000
+              description: "`organize` (obligatoire) : ce que l'admin demande au modèle"
+
+    Job:
+      type: object
+      required: [id, type, status, createdAt]
+      properties:
+        id: {type: integer}
+        type: {$ref: "#/components/schemas/JobType"}
+        status: {$ref: "#/components/schemas/JobStatus"}
+        params:
+          type: [object, "null"]
+          additionalProperties: true
+        stats:
+          type: [object, "null"]
+          description: Compteurs (vus, ajoutés, modifiés, disparus, erreurs…)
+          additionalProperties: {type: integer}
+        requestedBy:
+          oneOf:
+            - $ref: "#/components/schemas/UserRef"
+            - type: "null"
+        summary:
+          type: [string, "null"]
+          description: "Compte rendu en texte (`organize` : réponse du modèle et lots proposés)"
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        startedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+        finishedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+
+    LogLevel:
+      type: string
+      enum: [debug, info, warning, error, critical]
+
+    LogEntry:
+      type: object
+      required: [ts, level, source, requestId, userId, message, context]
+      properties:
+        ts: {$ref: "#/components/schemas/DateTime"}
+        level: {$ref: "#/components/schemas/LogLevel"}
+        source: {type: string, enum: [api, cli, securite]}
+        requestId: {type: [string, "null"]}
+        userId: {type: [integer, "null"]}
+        message:
+          type: string
+          description: Message, ou nom de l'événement pour le journal de sécurité (`login_failed`…)
+        context:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Détails (pour la sécurité, `ip` et les autres champs de la ligne)
+
+    LogPage:
+      type: object
+      required: [items, next]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/LogEntry"}
+        next:
+          type: [string, "null"]
+          description: À passer dans `cursor` pour la suite ; null = début des journaux atteint
+
+    BackgroundRef:
+      type: object
+      required: [id, imageUrl]
+      properties:
+        id: {type: integer}
+        imageUrl: {type: string, description: "Adresse de l'image (sous /api/v2), avec son empreinte"}
+
+    Background:
+      type: object
+      required: [id, name, active, width, height, sizeBytes, mimeType, imageUrl, createdAt]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        active: {type: boolean, description: "Fait partie du tirage au hasard"}
+        width: {type: integer}
+        height: {type: integer}
+        sizeBytes: {type: integer}
+        mimeType: {type: string, enum: [image/jpeg, image/png, image/webp]}
+        imageUrl: {type: string}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+
+    InboxItem:
+      type: object
+      required: [id, sourceDir, status, fileCount, sizeBytes, message, albumTitle, albumArtist, targetDir, firstSeenAt, updatedAt, filedAt]
+      properties:
+        id: {type: integer}
+        sourceDir: {type: string, description: "Dossier déposé, ex. inbox/Téléchargés/Tonight"}
+        status:
+          type: string
+          enum: [waiting, incomplete, blocked, filed]
+          description: |
+            `waiting` : copie en cours ou modifié récemment ; `incomplete` : pistes manquantes d'après les
+            tags (rangé quand même après 24 h) ; `blocked` : à ranger à la main, voir `message` ;
+            `filed` : rangé dans `targetDir`.
+        fileCount: {type: integer}
+        sizeBytes: {type: integer}
+        message: {type: [string, "null"], description: "Raison d'un blocage ou avertissement"}
+        albumTitle: {type: [string, "null"]}
+        albumArtist: {type: [string, "null"], description: "null pour une compilation"}
+        targetDir: {type: [string, "null"], description: "Dossier de rangement, prévu ou fait"}
+        firstSeenAt: {$ref: "#/components/schemas/DateTime"}
+        updatedAt: {$ref: "#/components/schemas/DateTime"}
+        filedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+
+    DuplicateAlbum:
+      type: object
+      required: [albumId, title, artist, removable, kept, removableBytes]
+      properties:
+        albumId: {type: integer}
+        title: {type: string}
+        artist: {type: [string, "null"], description: "null pour une compilation"}
+        removable: {type: integer, description: MP3 retirables (leur FLAC est là et de même durée)}
+        kept: {type: integer, description: MP3 gardés malgré un FLAC (voir le détail)}
+        removableBytes: {type: integer}
+
+    DamagedTrack:
+      type: object
+      required: [track, storageKey, errors, detail]
+      properties:
+        track: {$ref: "#/components/schemas/Track"}
+        storageKey: {type: string, description: Fichier vérifié (celui qui est servi)}
+        errors: {type: integer, minimum: 1, description: Trames illisibles}
+        detail:
+          type: [string, "null"]
+          description: "Où on les entend et la raison du décodeur (« à 0:35 et 2:08 : flac : invalid subframe padding »)"
+
+    SameRecordingGroup:
+      type: object
+      required: [score, verdict, tracks]
+      properties:
+        score: {type: number, minimum: 0, maximum: 1, description: Ressemblance la plus faible entre deux pistes du groupe}
+        verdict:
+          type: string
+          enum: [same, close]
+          description: "`same` : même enregistrement (score ≥ 0,95) ; `close` : très proche"
+        tracks:
+          type: array
+          minItems: 2
+          items: {$ref: "#/components/schemas/Track"}
+
+    DuplicateAlbumDetail:
+      allOf:
+        - $ref: "#/components/schemas/DuplicateAlbum"
+        - type: object
+          required: [files]
+          properties:
+            files:
+              type: array
+              items: {$ref: "#/components/schemas/DuplicateFile"}
+
+    DuplicateFile:
+      type: object
+      required: [trackId, discNumber, trackNumber, title, mp3, lossless, removable, reason]
+      properties:
+        trackId: {type: integer}
+        discNumber: {type: [integer, "null"]}
+        trackNumber: {type: [integer, "null"]}
+        title: {type: string}
+        mp3:
+          type: object
+          required: [storageKey, sizeBytes, durationMs, bitrateKbps]
+          properties:
+            storageKey: {type: string}
+            sizeBytes: {type: integer}
+            durationMs: {type: integer}
+            bitrateKbps: {type: [integer, "null"]}
+        lossless:
+          type: object
+          required: [storageKey, format, durationMs, available]
+          properties:
+            storageKey: {type: string}
+            format: {type: string, enum: [flac, alac, wav]}
+            durationMs: {type: integer}
+            available: {type: boolean, description: Présent dans le stockage au dernier passage}
+        removable: {type: boolean}
+        reason: {type: [string, "null"], description: "Pourquoi le MP3 est gardé, ex. « durées différentes (22 s) »"}
+
+    JobPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/Job"}
+
+    JobError:
+      type: object
+      required: [id, jobId, code, message, createdAt]
+      properties:
+        id: {type: integer}
+        jobId: {type: integer}
+        storageKey: {type: [string, "null"]}
+        code: {type: string, examples: [probe_failed]}
+        message: {type: string}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        resolvedAt:
+          oneOf:
+            - $ref: "#/components/schemas/DateTime"
+            - type: "null"
+
+    JobErrorPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/JobError"}
+
+    AuditEntry:
+      type: object
+      required: [id, createdAt, action]
+      properties:
+        id: {type: integer}
+        createdAt: {$ref: "#/components/schemas/DateTime"}
+        actor:
+          oneOf:
+            - $ref: "#/components/schemas/UserRef"
+            - type: "null"
+        action: {type: string, examples: [user.approve]}
+        targetType: {type: [string, "null"]}
+        targetId: {type: [integer, "null"]}
+        before: {description: État avant (jamais de secret)}
+        after: {description: État après}
+        ip: {type: [string, "null"]}
+        requestId: {type: [string, "null"]}
+
+    AuditPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: "#/components/schemas/AuditEntry"}

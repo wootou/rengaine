@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Essai du son</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0; padding: 12px 16px; background: #fffdf9; color: #1f1a16; }
+  h1 { font-size: 1.2rem; margin: 0 0 .5rem; }
+  button, select { font: inherit; min-height: 44px; margin: 4px 4px 4px 0; }
+  #log { font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap; background: #efe8df; padding: 8px; max-height: 40vh; overflow: auto; }
+  .row { padding: 14px 8px; border-bottom: 1px solid #e0d6ca; }
+</style>
+<script src="essai-son.js" defer></script>
+</head>
+<body>
+<h1>Essai du son (sans l'interface du lecteur)</h1>
+<p>Lecture d'une piste par un simple élément audio, sans Web Audio, sans React, sans forme d'onde. Faire défiler la liste pendant l'écoute ; le journal note les attentes du flux et les retards.</p>
+<select id="track" aria-label="Piste"></select>
+<select id="format" aria-label="Format">
+  <option value="">Fichier d'origine (FLAC s'il existe)</option>
+  <option value="format=mp3&amp;bitrate=320">Converti en MP3 320</option>
+  <option value="format=opus&amp;bitrate=256">Converti en Opus 256</option>
+</select>
+<button id="play" type="button">Lecture</button>
+<button id="stop" type="button">Arrêt</button>
+<button id="copy" type="button">Copier le journal</button>
+<div id="log" role="log"></div>
+<div id="rows"></div>
+</body>
+</html>

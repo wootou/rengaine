@@ -1,0 +1,18 @@
+[Unit]
+Description=Rengaine — indexation du stockage (seulement ce qui a changé)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+ExecStart=/usr/bin/php /var/www/rengaine/server/bin/rengaine index
+# Code 3 = passage terminé avec des fichiers en erreur (visibles dans l'admin) : pas un échec du service
+SuccessExitStatus=3
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes

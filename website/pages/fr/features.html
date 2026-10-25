@@ -1,0 +1,83 @@
+<article class="page">
+<h1>Fonctionnalités</h1>
+<p class="lead">Ce que fait Rengaine, de vos fichiers jusqu'à vos oreilles.</p>
+
+<section class="feature">
+  <div>
+    <h2>Une bibliothèque qui se range toute seule</h2>
+    <p>Rengaine lit un dossier ou un bucket S3 et ne modifie jamais vos fichiers. Un dossier forme un album ;
+    titre, artiste et année sont votés sur les tags des pistes. Un MP3 et un FLAC du même morceau ne font
+    qu'une piste, et la version sans perte est jouée.</p>
+    <p>Déposez un nouvel album dans le dossier <code>inbox/</code> : il est rangé sous un nom propre
+    (<code>Artiste/Album (année)/01 - Titre.flac</code>). Pochettes, genres, années : chaque correction est
+    gardée, résiste aux scans et s'annule.</p>
+  </div>
+  {{shot:album|Une page d'album : pochette, informations, liste des pistes avec leur durée}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Un son soigné</h2>
+    <p>Chaque piste est mesurée : le volume est égalisé (par piste ou par album), les silences de début et de
+    fin sont sautés. Quand le tempo est connu, le fondu dure des mesures entières et aligne les temps, comme
+    un DJ.</p>
+    <p>Sur téléphone ou avec une connexion lente, une version Opus plus légère est convertie à la volée,
+    avec un réglage pour le wifi et un pour les données mobiles.</p>
+  </div>
+  {{shot:settings|Les réglages du son : égalisation du volume, fondu enchaîné et qualité du flux}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Une écoute sans fin</h2>
+    <p>Explorez par genre et sous-genre, par ambiance (calme, pour se concentrer, énergique, pour danser),
+    par décennie ou par collection, et lancez une écoute au hasard qui ne s'arrête pas.</p>
+    <p>La lecture continue choisit des pistes qui s'enchaînent avec la dernière : tonalité, tempo, favoris,
+    pas de répétition récente, artistes espacés.</p>
+  </div>
+  {{shot:explore|La page Explorer : genres, ambiances et décennies}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Pour toute la maison</h2>
+    <p>Chaque compte a sa file d'attente, ses favoris, ses playlists, son historique et ses réglages. La file
+    vous suit d'un appareil à l'autre : commencée sur l'ordinateur, elle continue sur le téléphone.</p>
+    <p>Les demandes de compte sont approuvées par un admin ; chacun voit ses appareils connectés et peut les
+    déconnecter.</p>
+  </div>
+  {{shot:queue|La file d'attente ouverte à côté du lecteur, avec la piste en cours}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Une télécommande à partager</h2>
+    <p>Pendant une soirée, envoyez un lien à vos invités. Depuis leur téléphone, sans compte, ils ajoutent des
+    morceaux, changent l'ordre, mettent en pause ou montent le son, selon les droits que vous avez choisis.
+    Le lien expire tout seul, et vous pouvez le révoquer à tout moment.</p>
+  </div>
+  {{shot:remote-phone|La télécommande d'un invité sur téléphone : la piste en cours et la suite de la file}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>L'IA propose, vous décidez</h2>
+    <p>Une grande bibliothèque a des genres en vrac, des années manquantes, des artistes écrits de deux façons.
+    Rengaine expose un serveur MCP : n'importe quel client compatible peut lire la bibliothèque et
+    <strong>proposer</strong> des corrections, regroupées par lots.</p>
+    <p>Rien ne change avant que vous appliquiez un lot, et chaque lot s'annule. Avec une clé d'API, ou un
+    modèle local, la demande peut aussi partir de l'admin.</p>
+  </div>
+  {{shot:proposals|L'écran des propositions : un lot de changements proposé par une IA, à appliquer ou refuser}}
+</section>
+
+<section class="feature">
+  <div>
+    <h2>Chez vous, et discret</h2>
+    <p>Pas de traceur, pas de police ni de script chargés ailleurs, aucun appel extérieur que vous n'ayez
+    configuré. Les adresses IP sont effacées après un délai réglable. Chacun peut télécharger ses données,
+    effacer son historique d'écoute et supprimer son compte.</p>
+  </div>
+  {{shot:history|L'historique d'écoute, par jour, avec la possibilité d'effacer une écoute ou tout l'historique}}
+</section>
+</article>

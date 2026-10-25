@@ -1,0 +1,10 @@
+[Unit]
+Description=Rengaine — analyse audio 10 minutes après la fin du passage précédent
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

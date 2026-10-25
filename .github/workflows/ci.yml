@@ -1,0 +1,96 @@
+# Tests de Rengaine à chaque push et pull request : serveur (PHP, MariaDB, ffmpeg), lecteur web
+# (Vitest, types, construction), contrat (Redocly), secrets. Les essais Chromium (npm run e2e)
+# demandent un vrai serveur web et restent à lancer en local.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: ci-root
+          MARIADB_DATABASE: rengaine_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          extensions: curl, mbstring, intl, pdo_mysql, apcu, xml
+          ini-values: apc.enable_cli=1
+          coverage: none
+      - name: Paquets
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-yaml libchromaprint-tools
+      - name: Configuration d'essai
+        run: |
+          mkdir -p /tmp/rengaine/music /tmp/rengaine/logs /tmp/rengaine/cache
+          cat > /tmp/rengaine/rengaine.ini <<'INI'
+          [base]
+          hote = "127.0.0.1"
+          port = 3306
+          nom = "rengaine_test"
+          utilisateur = "root"
+          mot_de_passe = "ci-root"
+          [stockage]
+          mode = "disque"
+          chemin = "/tmp/rengaine/music"
+          [site]
+          url = "https://rengaine.test"
+          [journaux]
+          dossier = "/tmp/rengaine/logs"
+          [cache]
+          dossier = "/tmp/rengaine/cache"
+          INI
+      - name: Tests du serveur
+        env:
+          RENGAINE_CONFIG: /tmp/rengaine/rengaine.ini
+        run: php server/tests/run.php
+
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx --yes @redocly/cli@2.64.1 lint api/openapi.yaml
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Recherche de secrets (gitleaks)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.24.0 detect --source /repo --redact --no-banner

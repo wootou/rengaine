@@ -1,0 +1,561 @@
+#!/usr/bin/env php
+<?php
+// Commande d'administration du site. À lancer en www-data, pour que les journaux restent à lui :
+//   sudo -u www-data php /var/www/rengaine/server/bin/rengaine <commande> [arguments]
+
+declare(strict_types=1);
+
+require __DIR__ . '/../bootstrap.php';
+
+use Musique\Audio\Analyzer;
+use Musique\Audio\Transcoder;
+use Musique\Config;
+use Musique\Db\Database;
+use Musique\Db\Migrator;
+use Musique\Library\AlbumBuilder;
+use Musique\Library\Duplicates;
+use Musique\Library\Genres;
+use Musique\Library\Images;
+use Musique\Library\Inbox;
+use Musique\Library\Indexer;
+use Musique\Library\Probe;
+use Musique\Log\ErrorHandler;
+use Musique\Log\Logger;
+use Musique\Log\RequestId;
+use Musique\Log\Retention;
+use Musique\Storage\StorageFactory;
+
+const AIDE = <<<TXT
+Usage : musique <commande> [arguments]
+
+  config:check              Vérifie la configuration (secrets masqués) et les connexions
+  db:status                 Version du schéma et migrations en attente
+  db:migrate                Crée le schéma ou applique les migrations en attente
+  storage:list [préfixe]    Liste les fichiers du stockage (--limit N, 20 par défaut)
+  storage:stat <clé>        Infos d'un fichier du stockage
+  index [--prefix P] [--force] [--sans-depot]
+                            Range d'abord le dépôt (inbox/, sauf avec --prefix ou --sans-depot),
+                            puis indexe le stockage (seulement ce qui a changé ; --force relit tout)
+  inbox [--essai]           Range les albums déposés dans inbox/ puis les indexe ; --essai montre
+                            seulement où chaque dossier serait rangé, sans rien déplacer
+  genres:import [--manuel FICHIER]
+                            Reprend les genres de l'ancien site (meta.json, genres_manual.json)
+  analyze [--limit N] [--retry]
+                            Mesure le volume et les silences des pistes en file (--retry : reprend
+                            les pistes abandonnées après 3 échecs)
+  abimes                    Pistes dont le fichier servi a des trames illisibles (accroc à l'écoute)
+  empreintes [--min 0.8] [--recalculer]
+                            Même enregistrement dans plusieurs pistes, d'après l'empreinte acoustique
+                            (BAS-03) ; --recalculer refait toutes les comparaisons
+  user:create <e-mail> <nom> [--role admin|user|agent]
+                            Crée un compte actif. Le mot de passe est demandé sans s'afficher (lu
+                            sur l'entrée standard s'il n'y a pas de terminal). Un compte agent n'a
+                            pas de mot de passe : son jeton est affiché une seule fois.
+  user:delete <e-mail> [--test]
+                            Supprime un compte et tout ce qui lui appartient (comme DELETE /me) ;
+                            refusé pour le dernier admin. Ses corrections restent (auteur « Compte
+                            supprimé »). --test (comptes d'essai) : les annule et les efface aussi.
+  jobs:run                  Exécute les tâches demandées depuis l'admin, envoie les mails en attente
+                            et le résumé des erreurs des tâches (lancé chaque minute par systemd)
+  mail:test <adresse>       Envoie un mail d'essai (vérifie la section [smtp])
+  mail:status               Mails en file, envoyés, abandonnés ; dernières erreurs
+  library:stats             Résumé de la bibliothèque et des derniers passages
+  doublons [--album <id>]   MP3 en double d'un FLAC : résumé par album, ou détail d'un album
+                            (retirable ou gardé, et pourquoi). Le retrait se demande dans l'admin.
+  corbeille                 MP3 retirés, par jour (corbeille/AAAA-MM-JJ/ dans le stockage)
+  corbeille:restaurer <AAAA-MM-JJ> [--dossier <Artiste - Album>]
+                            Remet les fichiers en place (puis : rengaine index)
+  corbeille:vider --avant <jours> [--confirmer]
+                            Supprime POUR DE BON les jours plus anciens ; sans --confirmer, compte seulement
+  conversions [--vider]     Cache des conversions à la volée (FLAC → Opus/MP3) : taille, nombre ;
+                            --vider le vide (sans effet sur la musique)
+  journaux:purger [--simuler]
+                            Efface les IP et les vieux journaux en base selon [journaux]
+                            (lancé une fois par jour par jobs:run) ; --simuler compte seulement
+  demo:generer <dossier> [--processus N]
+                            Bibliothèque de démonstration entièrement fictive (albums, pochettes, musique
+                            synthétisée) dans <dossier>/inbox/, à ranger ensuite par « index »
+
+Configuration : /etc/rengaine/rengaine.ini (ou variable RENGAINE_CONFIG).
+
+TXT;
+
+$args = array_slice($argv, 1);
+$command = array_shift($args) ?? 'aide';
+$options = [];
+$positional = [];
+for ($i = 0; $i < count($args); $i++) {
+    if (str_starts_with($args[$i], '--')) {
+        // --option valeur, ou drapeau seul (--force) quand la suite est une autre option ou rien
+        $next = $args[$i + 1] ?? null;
+        $options[substr($args[$i], 2)] = $next !== null && !str_starts_with($next, '--') ? $next : '';
+        if ($next !== null && !str_starts_with($next, '--')) {
+            $i++;
+        }
+    } else {
+        $positional[] = $args[$i];
+    }
+}
+
+try {
+    $config = Config::load();
+    $logger = Logger::fromConfig($config, 'cli')->withRequest(RequestId::generate());
+    ErrorHandler::install($logger);
+} catch (Throwable $e) {
+    fwrite(STDERR, 'Erreur : ' . $e->getMessage() . "\n");
+    exit(1);
+}
+
+try {
+    switch ($command) {
+        case 'config:check':
+            $ok = true;
+            echo "Fichier : {$config->path}\n";
+            foreach ($config->describe() as $section => $values) {
+                echo "[$section]\n";
+                foreach ($values as $k => $v) {
+                    echo "  $k = " . (is_bool($v) ? ($v ? 'true' : 'false') : $v) . "\n";
+                }
+            }
+            echo "\nBase : ";
+            try {
+                $db = Database::fromConfig($config);
+                echo 'ok (MariaDB ' . $db->value('SELECT VERSION()') . ', fuseau ' . $db->value('SELECT @@session.time_zone') . ")\n";
+            } catch (Throwable $e) {
+                $ok = false;
+                echo 'ÉCHEC — ' . $e->getMessage() . "\n";
+            }
+            $site = $config->has('site', 'url') ? trim($config->string('site', 'url')) : '';
+            echo 'Adresse du site : ' . (preg_match('#^https?://[^/\s]+#', $site) ? "ok ($site)\n" : "ÉCHEC — [site] url manquante ou invalide (obligatoire : liens des mails, appairage, télécommande)\n");
+            echo 'Stockage : ';
+            try {
+                $storage = StorageFactory::fromConfig($config);
+                $first = $storage->list()->current();
+                echo 'ok (mode ' . $storage->mode() . ', ' . ($first === null ? 'vide' : 'premier fichier : ' . $first->key) . ")\n";
+            } catch (Throwable $e) {
+                $ok = false;
+                echo 'ÉCHEC — ' . $e->getMessage() . "\n";
+            }
+            exit($ok ? 0 : 1);
+
+        case 'db:status':
+            $migrator = new Migrator(Database::fromConfig($config), Musique\REPO_DIR . '/db');
+            $v = $migrator->currentVersion();
+            echo $v === null ? "Schéma absent : lancer db:migrate\n" : "Version du schéma : $v\n";
+            foreach ($migrator->pending() as $version => $file) {
+                echo "  en attente : " . basename($file) . "\n";
+            }
+            exit(0);
+
+        case 'db:migrate':
+            $migrator = new Migrator(Database::fromConfig($config), Musique\REPO_DIR . '/db');
+            $done = $migrator->migrate();
+            foreach ($done as $d) {
+                echo "appliqué : $d\n";
+                $logger->info('Migration appliquée', ['migration' => $d]);
+            }
+            echo $done === [] ? "Rien à faire (version {$migrator->currentVersion()}).\n" : "Version du schéma : {$migrator->currentVersion()}\n";
+            exit(0);
+
+        case 'storage:list':
+            $storage = StorageFactory::fromConfig($config);
+            $limit = (int) ($options['limit'] ?? 20);
+            $n = 0;
+            foreach ($storage->list($positional[0] ?? '') as $obj) {
+                if ($limit > 0 && $n >= $limit) {
+                    echo "… (--limit 0 pour tout afficher)\n";
+                    break;
+                }
+                printf("%12d  %s  %s\n", $obj->size, $obj->modifiedAt?->format('Y-m-d H:i') ?? '?', $obj->key);
+                $n++;
+            }
+            exit(0);
+
+        case 'storage:stat':
+            $key = $positional[0] ?? throw new InvalidArgumentException('clé manquante');
+            $obj = StorageFactory::fromConfig($config)->stat($key);
+            if ($obj === null) {
+                echo "Introuvable : $key\n";
+                exit(1);
+            }
+            printf("clé      : %s\ntaille   : %d octets\nmodifié  : %s\netag     : %s\n",
+                $obj->key, $obj->size, $obj->modifiedAt?->format(DATE_ATOM) ?? '?', $obj->etag ?? '—');
+            exit(0);
+
+        case 'index':
+        case 'inbox':
+            $db = Database::fromConfig($config);
+            $storage = StorageFactory::fromConfig($config);
+            $say = static function (string $msg): void { echo "  … $msg\n"; };
+            $filed = [];
+            if ($command === 'inbox' || (!isset($options['prefix']) && !array_key_exists('sans-depot', $options))) {
+                $dry = array_key_exists('essai', $options);
+                $res = Inbox::fromConfig($config, $db, $storage, $logger)->run(null, $dry ? null : $say, null, $dry);
+                $filed = $res['filed'];
+                if ($dry) {
+                    echo $res['plans'] === [] ? "Dépôt vide.\n" : '';
+                    foreach ($res['plans'] as $p) {
+                        echo "{$p['dir']} : {$p['status']}" . (isset($p['message']) ? " — {$p['message']}" : '') . "\n";
+                        foreach ($p['moves'] ?? [] as $from => $to) {
+                            echo '    ' . substr($from, strlen($p['dir']) + 1) . "\n      → $to\n";
+                        }
+                    }
+                    exit(0);
+                }
+                if ($res['plans'] !== []) {
+                    echo 'Dépôt : ' . count($filed) . " album(s) rangé(s)\n";
+                }
+                if ($command === 'inbox' && $filed === []) {
+                    exit(0);
+                }
+            }
+            $genres = new Genres($db);
+            $images = new Images($db, $storage, rtrim($config->string('cache', 'dossier', '/var/cache/rengaine'), '/'));
+            $indexer = new Indexer($db, $storage, $logger,
+                new Probe($config->int('indexeur', 'processus', 8)), new AlbumBuilder($db, $genres, $images), $genres);
+            echo "Indexation (stockage : {$storage->mode()}" . (isset($options['prefix']) ? ", préfixe « {$options['prefix']} »" : '') . ")\n";
+            $stats = $indexer->run($options['prefix'] ?? '', array_key_exists('force', $options), null, $say);
+            foreach ($stats as $k => $v) {
+                printf("  %-16s %d\n", $k, $v);
+            }
+            exit(($stats['errors'] ?? 0) > 0 ? 3 : 0);
+
+        case 'genres:import':
+            $db = Database::fromConfig($config);
+            $manual = $options['manuel'] ?? null;
+            if ($manual !== null && !is_readable($manual)) {
+                throw new RuntimeException("Fichier illisible : $manual");
+            }
+            [$n, $err] = (new Genres($db))->importLegacy(StorageFactory::fromConfig($config), $manual,
+                static function (string $key, string $msg) use ($logger): void { $logger->warning($msg, ['key' => $key]); echo "  ! $key : $msg\n"; });
+            echo "Genres importés pour $n album(s), $err erreur(s).\n";
+            exit($err > 0 ? 3 : 0);
+
+        case 'analyze':
+            $db = Database::fromConfig($config);
+            $storage = StorageFactory::fromConfig($config);
+            $cores = max(1, (int) @shell_exec('nproc'));
+            $analyzer = new Analyzer($db, $storage, $logger,
+                rtrim($config->string('cache', 'dossier', '/var/cache/rengaine'), '/') . '/tmp',
+                $config->int('analyse', 'processus', $cores), 900, Musique\Audio\Rhythm::fromConfig($config), Musique\Audio\Fingerprint::fromConfig($config));
+            if (array_key_exists('retry', $options)) {
+                echo 'Pistes remises en file : ' . $analyzer->retryFailed() . "\n";
+            }
+            $limit = isset($options['limit']) && $options['limit'] !== '' ? (int) $options['limit'] : null;
+            $rhythm = Musique\Audio\Rhythm::fromConfig($config);
+            echo "Analyse audio (stockage : {$storage->mode()} ; BPM et tonalité : " . ($rhythm !== null ? $rhythm->version() : 'tags seulement, Essentia absent')
+                . ' ; empreintes : ' . (Musique\Audio\Fingerprint::fromConfig($config) !== null ? 'fpcalc' : 'fpcalc absent') . ")\n";
+            $stats = $analyzer->run($limit, static function (string $msg): void { echo "  … $msg\n"; });
+            foreach ($stats as $k => $v) {
+                printf("  %-16s %d\n", $k, $v);
+            }
+            exit(($stats['errors'] ?? 0) > 0 ? 3 : 0);
+
+        case 'user:create':
+            [$email, $name] = [$positional[0] ?? '', trim(implode(' ', array_slice($positional, 1)))];
+            $role = $options['role'] ?? 'user';
+            if (filter_var($email, FILTER_VALIDATE_EMAIL) === false || $name === '' || !in_array($role, ['admin', 'user', 'agent'], true)) {
+                throw new InvalidArgumentException('usage : user:create <e-mail> <nom> [--role admin|user|agent]');
+            }
+            $db = Database::fromConfig($config);
+            if ($db->value('SELECT id FROM users WHERE email = ?', [mb_strtolower($email)]) !== null) {
+                throw new RuntimeException('Un compte existe déjà avec cette adresse');
+            }
+            $hash = null;
+            if ($role !== 'agent') {
+                $tty = stream_isatty(STDIN);
+                if ($tty) {
+                    echo 'Mot de passe (10 caractères au moins) : ';
+                    shell_exec('stty -echo');
+                }
+                $password = rtrim((string) fgets(STDIN), "\r\n");
+                if ($tty) {
+                    shell_exec('stty echo');
+                    echo "\nConfirmation : ";
+                    shell_exec('stty -echo');
+                    $confirm = rtrim((string) fgets(STDIN), "\r\n");
+                    shell_exec('stty echo');
+                    echo "\n";
+                    if ($confirm !== $password) {
+                        throw new RuntimeException('Les deux saisies diffèrent');
+                    }
+                }
+                if (mb_strlen($password) < 10 || mb_strlen($password) > 200) {
+                    throw new RuntimeException('Mot de passe : de 10 à 200 caractères');
+                }
+                $hash = Musique\Auth\Passwords::hash($password);
+            }
+            $db->run("INSERT INTO users (email, display_name, password_hash, role, status, decided_at) VALUES (?, ?, ?, ?, 'active', CURRENT_TIMESTAMP(3))",
+                [mb_strtolower($email), $name, $hash, $role]);
+            $id = (int) $db->pdo()->lastInsertId();
+            $db->run("INSERT INTO audit_log (action, target_type, target_id, after_value) VALUES ('user.create', 'user', ?, ?)",
+                [$id, json_encode(['role' => $role, 'via' => 'cli'])]);
+            $logger->info('Compte créé en ligne de commande', ['user' => $id, 'role' => $role]);
+            echo "Compte n° $id créé ($role).\n";
+            if ($role === 'agent') {
+                $t = (new Musique\Auth\Tokens($db))->create($id, 'agent', $name, null, null);
+                echo "Jeton de l'agent (affiché une seule fois, à garder en lieu sûr) :\n{$t['secret']}\n";
+            }
+            exit(0);
+
+        case 'user:delete':
+            $email = mb_strtolower($positional[0] ?? '');
+            $test = array_key_exists('test', $options);
+            if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+                throw new InvalidArgumentException('usage : user:delete <e-mail> [--test]');
+            }
+            $db = Database::fromConfig($config);
+            $u = $db->one('SELECT id, role, status FROM users WHERE email = ?', [$email]) ?? throw new RuntimeException('Compte introuvable');
+            $id = (int) $u['id'];
+            if ($u['role'] === 'admin' && $u['status'] === 'active'
+                && (int) $db->value("SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?", [$id]) === 0) {
+                throw new RuntimeException('C’est le dernier compte admin actif : suppression refusée');
+            }
+            $reverted = 0;
+            if ($test) {
+                // Compte d'essai : ses corrections encore actives sont annulées (la plus récente
+                // d'abord, pour que chaque valeur d'origine revienne), puis tout est effacé.
+                $genres = new Genres($db);
+                $images = new Images($db, StorageFactory::fromConfig($config), rtrim($config->string('cache', 'dossier', '/var/cache/rengaine'), '/'));
+                $corrections = new Musique\Library\Corrections($db, $genres, new AlbumBuilder($db, $genres, $images));
+                foreach ($db->all("SELECT id FROM corrections WHERE created_by = ? AND status = 'active' ORDER BY id DESC", [$id]) as $c) {
+                    $corrections->revert((int) $c['id'], $id);
+                    $reverted++;
+                }
+                $db->run('DELETE FROM corrections WHERE created_by = ?', [$id]);
+                $db->run('DELETE FROM change_sets WHERE created_by = ?', [$id]);
+            }
+            // Son audit et ses mails (ceux qui le concernent ou lui étaient adressés) partent avec lui
+            $db->run("DELETE FROM audit_log WHERE actor_user_id = ? OR (target_type = 'user' AND target_id = ?)", [$id, $id]);
+            $db->run('DELETE FROM mail_queue WHERE user_id = ? OR to_address = ?', [$id, $email]);
+            $db->run('DELETE FROM users WHERE id = ?', [$id]);
+            if (!$test) {
+                $db->run("INSERT INTO audit_log (action, target_type, target_id, before_value) VALUES ('user.delete', 'user', ?, ?)",
+                    [$id, json_encode(['role' => $u['role'], 'via' => 'cli'])]);
+            }
+            $logger->info('Compte supprimé en ligne de commande', ['user' => $id, 'test' => $test, 'reverted' => $reverted]);
+            echo "Compte n° $id supprimé" . ($reverted ? " ($reverted correction(s) annulée(s))" : '') . ".\n";
+            exit(0);
+
+        case 'jobs:run':
+            $db = Database::fromConfig($config);
+            $n = (new Musique\Jobs\Runner($config, $db, $logger))
+                ->runQueued(static function (string $msg): void { echo "$msg\n"; });
+            if ($n > 0) {
+                echo "$n tâche(s) traitée(s).\n";
+            }
+            // Mails : résumé des nouvelles erreurs (au plus un par heure), puis la file
+            $site = $config->has('site', 'url') ? rtrim($config->string('site', 'url'), '/') : '';
+            (new Musique\Mail\Notices($db, $config, $site))->jobErrorsDigest();
+            // Conservation des journaux (JRN-05) : une fois par jour. Un échec est noté dans `jobs`.
+            $retention = Retention::fromConfig($config, $db, $logger);
+            if ($retention->due()) {
+                try {
+                    $done = array_filter($retention->run());
+                    if ($done !== []) {
+                        echo 'Purge des journaux : ' . implode(', ', array_map(static fn ($k, $v) => "$k $v", array_keys($done), $done)) . ".\n";
+                    }
+                } catch (Throwable $e) {
+                    echo 'Purge des journaux en échec : ' . $e->getMessage() . "\n";
+                }
+            }
+            $r = (new Musique\Mail\Outbox($db))->flush($config, $logger);
+            if ($r['sent'] + $r['failed'] + $r['retry'] > 0) {
+                echo "Mails : {$r['sent']} envoyé(s), {$r['retry']} à réessayer, {$r['failed']} abandonné(s).\n";
+            }
+            exit(0);
+
+        case 'mail:test':
+            $to = $positional[0] ?? '';
+            if (!Musique\Mail\Message::validAddress($to)) {
+                throw new RuntimeException('Usage : rengaine mail:test <adresse>');
+            }
+            if (!Musique\Mail\Outbox::enabled($config)) {
+                throw new RuntimeException('Section [smtp] incomplète (hote et expediteur) : aucun mail ne part.');
+            }
+            $db = Database::fromConfig($config);
+            $site = $config->has('site', 'url') ? rtrim($config->string('site', 'url'), '/') : '';
+            $id = (new Musique\Mail\Notices($db, $config, $site))->test($to);
+            $r = (new Musique\Mail\Outbox($db))->flush($config, $logger);
+            $row = $db->one('SELECT status, last_error FROM mail_queue WHERE id = ?', [$id]);
+            echo $row['status'] === 'sent' ? "Mail d'essai envoyé à $to.\n" : "Pas envoyé ({$row['status']}) : {$row['last_error']}\n";
+            exit($row['status'] === 'sent' ? 0 : 3);
+
+        case 'mail:status':
+            $db = Database::fromConfig($config);
+            echo 'Envoi : ' . (Musique\Mail\Outbox::enabled($config) ? "activé ({$config->string('smtp', 'hote')})" : 'désactivé ([smtp] incomplète)') . "\n";
+            foreach ((new Musique\Mail\Outbox($db))->counts() as $k => $v) {
+                printf("  %-8s %d\n", $k, $v);
+            }
+            foreach ($db->all("SELECT id, kind, created_at, attempts, last_error FROM mail_queue WHERE last_error IS NOT NULL ORDER BY id DESC LIMIT 5") as $m) {
+                echo "  n° {$m['id']} {$m['kind']} ({$m['created_at']}, {$m['attempts']} essai(s)) : {$m['last_error']}\n";
+            }
+            exit(0);
+
+        case 'library:stats':
+            $db = Database::fromConfig($config);
+            $r = $db->one("SELECT
+                (SELECT COUNT(*) FROM albums WHERE missing_since IS NULL) AS albums,
+                (SELECT COUNT(*) FROM albums WHERE missing_since IS NULL AND kind = 'loose') AS en_vrac,
+                (SELECT COUNT(*) FROM tracks WHERE missing_since IS NULL) AS pistes,
+                (SELECT COUNT(*) FROM track_files) AS fichiers_audio,
+                (SELECT COUNT(*) FROM artists) AS artistes,
+                (SELECT COUNT(*) FROM genres) AS genres,
+                (SELECT COUNT(*) FROM genre_aliases WHERE genre_id IS NULL) AS tags_genre_non_rattaches,
+                (SELECT COUNT(*) FROM images) AS images,
+                (SELECT COUNT(*) FROM albums WHERE missing_since IS NULL AND cover_image_id IS NULL) AS albums_sans_jaquette,
+                (SELECT COUNT(*) FROM track_analysis WHERE loudness_lufs IS NOT NULL) AS pistes_mesurees,
+                (SELECT COUNT(*) FROM analysis_queue WHERE (steps & " . Analyzer::STEPS_DONE . ") <> 0 AND attempts < " . Analyzer::MAX_ATTEMPTS . ") AS mesures_en_attente,
+                (SELECT COUNT(*) FROM analysis_queue WHERE attempts >= " . Analyzer::MAX_ATTEMPTS . ") AS mesures_en_echec,
+                (SELECT COUNT(*) FROM analysis_queue WHERE (steps & " . Analyzer::STEPS_RHYTHM . ") <> 0 AND attempts < " . Analyzer::MAX_ATTEMPTS . ") AS bpm_tonalite_en_attente,
+                (SELECT COUNT(*) FROM track_analysis WHERE bpm IS NOT NULL) AS pistes_avec_bpm,
+                (SELECT COUNT(*) FROM track_analysis WHERE musical_key IS NOT NULL) AS pistes_avec_tonalite,
+                (SELECT COUNT(*) FROM job_errors WHERE resolved_at IS NULL) AS erreurs_ouvertes");
+            foreach ($r as $k => $v) {
+                printf("  %-26s %s\n", str_replace('_', ' ', $k), $v);
+            }
+            echo "\nDerniers passages :\n";
+            foreach ($db->all('SELECT id, type, status, started_at, finished_at, stats FROM jobs ORDER BY id DESC LIMIT 5') as $j) {
+                printf("  #%d %s %s %s  %s\n", $j['id'], $j['type'], $j['status'], $j['started_at'], $j['stats'] ?? '');
+            }
+            exit(0);
+
+        case 'abimes':
+            $db = Database::fromConfig($config);
+            $rows = $db->all('SELECT so.storage_key, ta.decode_errors, ta.decode_detail FROM track_analysis ta
+                JOIN tracks t ON t.id = ta.track_id AND t.missing_since IS NULL JOIN track_files tf ON tf.id = ta.file_id
+                JOIN storage_objects so ON so.id = tf.object_id WHERE ta.decode_errors > 0 ORDER BY so.storage_key');
+            foreach ($rows as $r) {
+                printf("  %-70s %3d  %s\n", mb_strimwidth((string) $r['storage_key'], 0, 70, '…'), $r['decode_errors'], $r['decode_detail']);
+            }
+            $pending = (int) $db->value('SELECT COUNT(*) FROM tracks t LEFT JOIN track_analysis ta ON ta.track_id = t.id WHERE t.missing_since IS NULL AND ta.decode_errors IS NULL');
+            echo '  ' . count($rows) . ' fichier(s) abîmé(s)' . ($pending ? ", $pending piste(s) pas encore vérifiée(s)" : '') . "\n";
+            exit(0);
+
+        case 'empreintes':
+            $db = Database::fromConfig($config);
+            $same = new Musique\Library\SameRecordings($db);
+            if (array_key_exists('recalculer', $options)) {
+                $r = $same->rebuild(static function (string $msg): void { echo "  $msg\n"; });
+                echo "  {$r['tracks']} empreintes comparées, {$r['pairs']} paire(s)\n";
+            }
+            $min = isset($options['min']) && is_numeric($options['min']) ? (float) $options['min'] : Musique\Audio\Fingerprint::CLOSE;
+            $groups = $same->groups($min);
+            foreach ($groups as $g) {
+                printf("  %s (ressemblance %d %%)\n", $g['score'] >= Musique\Audio\Fingerprint::SAME ? 'Même enregistrement' : 'Très proche', (int) round($g['score'] * 100));
+                foreach ($g['trackIds'] as $id) {
+                    $t = $db->one(
+                        'SELECT t.title, t.duration_ms, a.title AS album, COALESCE(t.artist_credit, ar.name) AS artist,
+                                (SELECT CONCAT(tf.format, IFNULL(CONCAT(" ", tf.bitrate_kbps, " kbit/s"), "")) FROM track_files tf WHERE tf.track_id = t.id ORDER BY tf.lossless DESC, tf.bitrate_kbps DESC LIMIT 1) AS fmt
+                           FROM tracks t JOIN albums a ON a.id = t.album_id LEFT JOIN artists ar ON ar.id = a.album_artist_id WHERE t.id = ?', [$id]);
+                    printf("    n° %-6d %-32s %-28s %-24s %5s  %s\n", $id, mb_strimwidth((string) $t['title'], 0, 32, '…'), mb_strimwidth((string) $t['artist'], 0, 28, '…'),
+                        mb_strimwidth((string) $t['album'], 0, 24, '…'), gmdate('i:s', intdiv((int) $t['duration_ms'], 1000)), $t['fmt']);
+                }
+            }
+            echo '  ' . count($groups) . " groupe(s)\n";
+            exit(0);
+
+        case 'doublons':
+            $dup = new Duplicates(Database::fromConfig($config), StorageFactory::fromConfig($config), $logger);
+            $mo = static fn (int $b): string => number_format($b / 1048576, 1, ',', ' ') . ' Mo';
+            if (isset($options['album'])) {
+                foreach ($dup->files((int) $options['album']) as $f) {
+                    printf("  %-4s %-50s %s\n", $f['removable'] ? 'oui' : 'NON', mb_strimwidth((string) $f['mp3_key'], 0, 50, '…'),
+                        $f['removable'] ? $mo((int) $f['mp3_size']) : $f['reason']);
+                }
+                exit(0);
+            }
+            $total = 0;
+            foreach ($dup->albums() as $a) {
+                printf("  n° %-6d %-40s %3d retirable(s) %3d gardé(s) %10s\n", $a['albumId'], mb_strimwidth(($a['artist'] ? $a['artist'] . ' – ' : '') . $a['title'], 0, 40, '…'),
+                    $a['removable'], $a['kept'], $mo($a['removableBytes']));
+                $total += $a['removableBytes'];
+            }
+            echo '  Place libérée si tout est retiré : ' . $mo($total) . "\n";
+            exit(0);
+
+        case 'corbeille':
+        case 'corbeille:restaurer':
+        case 'corbeille:vider':
+            $dup = new Duplicates(Database::fromConfig($config), StorageFactory::fromConfig($config), $logger);
+            if ($command === 'corbeille') {
+                foreach ($dup->trash() as $day => $st) {
+                    printf("  %s  %5d fichier(s)  %8.1f Mo\n", $day, $st['files'], $st['bytes'] / 1048576);
+                }
+                exit(0);
+            }
+            if ($command === 'corbeille:restaurer') {
+                $day = $positional[0] ?? '';
+                $res = $dup->restore($day, isset($options['dossier']) ? rtrim((string) $options['dossier'], '/') . '/' : '');
+                echo "  {$res['restored']} fichier(s) remis en place\n";
+                foreach ($res['skipped'] as $k) {
+                    echo "  gardé dans la corbeille (place reprise) : $k\n";
+                }
+                if ($res['restored'] > 0) {
+                    echo "  Lancer ensuite : rengaine index\n";
+                }
+                exit(0);
+            }
+            $days = (int) ($options['avant'] ?? 0);
+            if ($days < 7) {
+                fwrite(STDERR, "--avant <jours> obligatoire, 7 au moins\n");
+                exit(2);
+            }
+            $confirm = array_key_exists('confirmer', $options);
+            $res = $dup->emptyTrash($days, $confirm);
+            printf("  %s : %d fichier(s), %.1f Mo (%s)\n", $confirm ? 'Supprimé' : 'À supprimer (ajouter --confirmer)', $res['files'], $res['bytes'] / 1048576,
+                $res['days'] === [] ? 'rien' : implode(', ', $res['days']));
+            exit(0);
+
+        case 'conversions':
+            $transcoder = Transcoder::fromConfig($config, rtrim($config->string('cache', 'dossier', '/var/cache/rengaine'), '/'));
+            if (array_key_exists('vider', $options)) {
+                echo '  ' . $transcoder->clear() . " conversion(s) retirée(s) du cache\n";
+            }
+            $st = $transcoder->purge();
+            printf("  %d conversion(s) en cache, %.1f Mo (plafond %d Mo) ; conversion %s\n", $st['files'], $st['bytes'] / 1048576,
+                $config->int('conversion', 'cache_mo', 2048), Transcoder::enabled($config) ? 'active' : 'désactivée');
+            exit(0);
+
+        case 'journaux:purger':
+            $db = Database::fromConfig($config);
+            $retention = Retention::fromConfig($config, $db, $logger);
+            $dry = array_key_exists('simuler', $options);
+            printf("  IP gardées %d jours, journaux %d jours, historique d'écoute %s\n", $retention->ipDays, $retention->days,
+                $retention->historyDays === 0 ? 'gardé en entier' : "$retention->historyDays jours");
+            try {
+                $res = $retention->run($dry);
+            } catch (Throwable $e) {
+                fwrite(STDERR, $e->getMessage() . "\n");
+                exit(1);
+            }
+            foreach ($res as $name => $n) {
+                printf("  %-20s %d %s\n", $name, $n, $dry ? 'à traiter' : 'traité(s)');
+            }
+            exit(0);
+
+        case 'demo:generer':
+            $dir = $positional[0] ?? null;
+            if ($dir === null) {
+                fwrite(STDERR, "Usage : rengaine demo:generer <dossier> [--processus N]\n");
+                exit(2);
+            }
+            $n = (new Musique\Demo\LibraryGenerator($dir, (int) ($options['processus'] ?? 4), static function (string $m): void { echo "  $m\n"; }))->run();
+            echo "  Bibliothèque fictive prête ($n piste(s) produite(s)).\n";
+            exit(0);
+
+        case 'aide':
+        case '--help':
+        case '-h':
+            echo AIDE;
+            exit(0);
+
+        default:
+            fwrite(STDERR, "Commande inconnue : $command\n\n" . AIDE);
+            exit(2);
+    }
+} catch (Throwable $e) {
+    $logger->error('Échec de la commande', ['command' => $command, 'exception' => $e]);
+    fwrite(STDERR, 'Erreur : ' . $e->getMessage() . "\n");
+    exit(1);
+}

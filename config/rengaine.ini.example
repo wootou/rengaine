@@ -1,0 +1,102 @@
+; Rengaine — server configuration
+;
+; Copy to /etc/rengaine/rengaine.ini (or point the RENGAINE_CONFIG environment variable at another path),
+; then restrict it: the file holds passwords and keys.
+;
+;   install -d -m 750 -o root -g www-data /etc/rengaine
+;   install -m 640 -o root -g www-data config/rengaine.ini.example /etc/rengaine/rengaine.ini
+;
+; Section and key names are in French (the project started in French); each one is explained below.
+; Check the result with:  sudo -u www-data php server/bin/rengaine config:check
+
+; ---------------------------------------------------------------------------- required
+
+[base]                            ; MariaDB database
+hote = "127.0.0.1"                ; host
+port = 3306
+nom = "rengaine"                  ; database name
+utilisateur = "rengaine"          ; user
+mot_de_passe = ""                 ; password
+
+[stockage]                        ; where the music files live
+mode = "disque"                   ; "disque" (a local folder) or "s3" (any S3-compatible object storage)
+chemin = "/srv/music"             ; disque: the music folder, readable (and writable for inbox/) by www-data
+s3_url = ""                       ; s3: endpoint, path-style (e.g. https://s3.example.org)
+s3_region = "us-east-1"
+s3_bucket = ""
+s3_cle = ""                       ; s3: access key
+s3_secret = ""                    ; s3: secret key
+
+[site]
+url = "https://music.example.org" ; public address of the site, REQUIRED: links in emails, pairing QR
+                                  ; codes, remote-control links. Never taken from the request.
+
+; ---------------------------------------------------------------------------- recommended
+
+[smtp]                            ; outgoing mail (account requests, password reset, error digests)
+hote = ""                         ; relay host; leave empty to send no mail at all
+port = 587
+chiffrement = "starttls"          ; "starttls" (587), "tls" (465) or "aucun" (local relay only)
+utilisateur = ""
+mot_de_passe = ""
+expediteur = ""                   ; From address; without it, no mail is sent
+admin = ""                        ; who receives alerts (comma-separated); empty = every active admin
+
+[journaux]                        ; logs and retention
+dossier = "/var/log/rengaine"      ; JSON-lines logs: api.log, cli.log, securite.log (fail2ban-friendly)
+niveau = "info"                   ; debug, info, warning, error
+conservation_jours = 365          ; older audit entries, finished jobs, sent mails, revoked tokens are deleted
+conservation_ip_jours = 90        ; IP addresses are erased after this many days (must be <= conservation_jours)
+historique_ecoute_jours = 0       ; listening history kept for N days; 0 = keep everything
+
+; ---------------------------------------------------------------------------- optional (defaults shown)
+
+[cache]
+dossier = "/var/cache/rengaine"    ; extracted covers, thumbnails, conversions, files being analysed
+
+[indexeur]                        ; library scan
+processus = 8                     ; ffprobe processes in parallel
+
+[analyse]                         ; audio analysis (loudness, silences, tempo, key, fingerprints)
+processus = 2                     ; parallel workers; default: number of CPU cores
+python = "/opt/rengaine-analyse/bin/python"  ; Python with Essentia (tempo, key, beats); "" = skip
+fpcalc = "fpcalc"                 ; Chromaprint's fpcalc (duplicate recordings); "" = skip
+
+[depot]                           ; the inbox/ folder: drop albums there, they get filed automatically
+attente_minutes = 10              ; a folder is filed once nothing has changed for this long
+attente_incomplet_heures = 24     ; an album that looks incomplete is filed anyway after this delay
+
+[conversion]                      ; on-the-fly conversion to Opus or MP3 for phones and slow links
+actif = 1                         ; 0 = always serve the original file
+cache_mo = 2048                   ; conversion cache size (MB); least-played files go first
+
+[mercure]                         ; real-time hub for the shared remote control (optional)
+hub_interne = "http://127.0.0.1:3700/.well-known/mercure"            ; where PHP publishes
+url_publique = "https://music.example.org/.well-known/mercure"       ; where browsers subscribe
+emetteur = "https://music.example.org"                               ; = MERCURE_ISSUER
+cle_publication = ""              ; = MERCURE_PUBLISHER_JWT_KEY
+cle_abonnement = ""               ; = MERCURE_SUBSCRIBER_JWT_KEY
+fichier_etat = ""                 ; optional: file a systemd .path unit watches to stop/start the hub
+                                  ; when the admin switches the remote control off
+
+[ia]                              ; AI reorganisation started from Admin > Proposals (optional)
+fournisseur = ""                  ; "anthropic", or "openai" for any OpenAI-compatible API
+                                  ; (OpenAI, Mistral, Ollama, LM Studio, vLLM…)
+cle = ""                          ; API key (optional for a local server); never sent to the browser
+modele = ""                       ; default for anthropic: claude-opus-5-5; required for openai
+url = ""                          ; required for openai (e.g. http://localhost:11434/v1 for Ollama)
+effort = "high"                   ; anthropic only: low, medium, high, xhigh, max
+tours_max = 40                    ; maximum exchanges with the model per task
+
+[limites]                         ; rate limits (APCu counters), per IPv4 address or IPv6 /64
+requetes_par_minute = 1200        ; API requests, excluding images and audio streams
+medias_par_minute = 6000          ; images and audio streams
+requetes_par_minute_compte = 2400 ; per account
+connexions_par_10min = 20         ; sign-in attempts; 5 failures also block that account from that network for 15 min
+demandes_compte_par_heure = 10    ; account requests
+appairages_par_10min = 10         ; pairing-code attempts
+codes_appairage_par_heure = 10    ; pairing codes created
+changements_mdp_par_10min = 10    ; password changes and resets
+oublis_mdp_par_heure = 10         ; "forgot password" requests
+recherches_par_minute = 600
+jetons_invalides_par_10min = 30   ; invalid tokens before the address is blocked

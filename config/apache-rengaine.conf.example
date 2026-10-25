@@ -1,0 +1,60 @@
+# Rengaine — Apache virtual host (HTTP behind a TLS reverse proxy, or add your own TLS directives).
+# Modules: mpm_event, proxy_fcgi (PHP-FPM), setenvif, headers, remoteip; proxy_http for Mercure.
+# Replace music.example.org and the paths, then: apachectl configtest && systemctl reload apache2
+
+<VirtualHost *:80>
+	ServerName music.example.org
+	DocumentRoot /var/www/rengaine/web/dist
+
+	# Behind a reverse proxy: trust X-Forwarded-For from the proxy only (its address below)
+	RemoteIPHeader X-Forwarded-For
+	RemoteIPInternalProxy 127.0.0.1
+	SetEnvIf X-Forwarded-Proto https HTTPS=on
+
+	# Web player (built by: cd web && npm ci && npm run build)
+	<Directory /var/www/rengaine/web/dist>
+		Options None
+		AllowOverride None
+		Require all granted
+		FallbackResource /index.html
+		Header always set X-Content-Type-Options "nosniff"
+		Header always set Referrer-Policy "no-referrer"
+		Header always set Content-Security-Policy "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	</Directory>
+	<Directory /var/www/rengaine/web/dist/assets>
+		Header set Cache-Control "public, max-age=31536000, immutable"
+	</Directory>
+	<Files "index.html">
+		Header set Cache-Control "no-cache"
+	</Files>
+
+	# API: a single PHP entry point
+	AliasMatch "^/api/v2(/.*)?$" "/var/www/rengaine/server/public/index.php"
+	<Directory /var/www/rengaine/server/public>
+		Options None
+		AllowOverride None
+		Require all granted
+		# Keep the Content-Length set by PHP (Apache >= 2.4.59 drops it otherwise and sends chunked:
+		# some players, like Android's, then cannot seek in a FLAC file without a SEEKTABLE)
+		SetEnv ap_trust_cgilike_cl 1
+	</Directory>
+	<LocationMatch "^/api/(?!v2(/|$))">
+		Require all denied
+	</LocationMatch>
+
+	# Optional: Mercure real-time hub (shared remote control). Browsers only subscribe (GET);
+	# the API publishes directly to 127.0.0.1:3700.
+	<Location "/.well-known/mercure">
+		ProxyPass "http://127.0.0.1:3700/.well-known/mercure" flushpackets=on timeout=120
+		SetEnv no-gzip 1
+		<Limit GET HEAD OPTIONS>
+			Require all granted
+		</Limit>
+		<LimitExcept GET HEAD OPTIONS>
+			Require all denied
+		</LimitExcept>
+	</Location>
+
+	ErrorLog ${APACHE_LOG_DIR}/rengaine-error.log
+	CustomLog ${APACHE_LOG_DIR}/rengaine-access.log combined
+</VirtualHost>

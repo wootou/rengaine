@@ -1,0 +1,21 @@
+# Dépendances et compilation
+node_modules/
+vendor/
+dist/
+web/dist/
+# Fichiers générés (types de l'API : régénérés depuis api/openapi.yaml)
+*.generated.d.ts
+# Locaux (valeurs propres à une machine : jamais publiées)
+web/.env.e2e.local
+server/tests/local.env
+*.bak-*
+.env
+*.log
+
+# Doc du contrat produite par api/doc.sh
+api/site/
+# Fichiers publiés sous /docs/ (captures pour l agent de l appli)
+publication/
+tools/export-forbidden.local
+demo-library/
+__pycache__/
