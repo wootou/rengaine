@@ -36,6 +36,25 @@ Droits nécessaires à la clé d'accès sur ce bucket :
 Un déplacement est une copie côté serveur (`x-amz-copy-source`) suivie d'une suppression. Une clé en
 lecture seule (liste et lecture) suffit si vous n'utilisez ni `inbox/` ni la mise de côté depuis l'admin.
 
+## Analyse audio
+
+`[analyse] processus` est le nombre de pistes analysées en même temps (par défaut : le nombre de cœurs).
+Commencez à 2 ou 3, puis montez en surveillant la mémoire et le disque :
+
+- **Mémoire** : comptez environ 1 Go par processus. Essentia charge tout le morceau ; les pistes de plus
+  de 20 minutes (mixes, sets) sont donc analysées sur des extraits (10 minutes au milieu, la première
+  et la dernière minute).
+- **Disque local, avec un stockage S3** : chaque piste en cours d'analyse est d'abord téléchargée en
+  entier dans `[cache] dossier` (sous-dossier `tmp/`), puis effacée. Gardez libre au moins le nombre de
+  processus multiplié par votre plus gros fichier (un FLAC haute résolution d'une heure dépasse 1 Go).
+  Un disque plein bloque aussi PHP-FPM, et le site ne répond plus.
+
+Si la mémoire manque quand même, le noyau tue le plus gros processus, une analyse : avec
+`OOMPolicy=continue` (dans le `rengaine-analyze.service` fourni), seule cette piste est notée en erreur.
+Une piste est abandonnée après 3 échecs ; `rengaine analyze --retry` remet les pistes abandonnées en
+file. Les erreurs de lecture se ferment d'elles-mêmes quand le fichier est relu sans erreur, ou
+supprimé ; les autres se ferment depuis **Admin > Tâches**.
+
 ## Mails
 
 Sans `[smtp] hote` ni `expediteur`, Rengaine n'envoie aucun mail ; tout le reste fonctionne. Avec les mails :

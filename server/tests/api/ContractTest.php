@@ -35,7 +35,7 @@ final class ContractTest extends TestCase
         }
         $this->assertSame([], array_values(array_diff(array_keys($contract), array_keys($routes))), 'opérations du contrat sans route');
         $this->assertSame([], array_values(array_diff(array_keys($routes), array_keys($contract))), 'routes absentes du contrat');
-        $this->assertSame(110, count($routes));
+        $this->assertSame(111, count($routes));
     }
 
     public function testAccesEtRoles(): void

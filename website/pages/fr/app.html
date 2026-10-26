@@ -3,19 +3,25 @@
 <p class="lead">Rengaine pour Android emporte votre bibliothèque dans la poche. L'appli se connecte à votre propre
 serveur Rengaine et joue votre musique en arrière-plan, écran verrouillé ou au casque Bluetooth. Elle ne fournit
 aucune musique et n'envoie rien ailleurs qu'à votre serveur.</p>
+<div class="actions">
+  <a class="button" href="https://github.com/wootou/rengaine-android/releases/tag/v1.0.0-rc.1">Télécharger l'APK sur GitHub</a>
+</div>
 
 <section class="feature">
   <div>
     <h2>Reprenez là où vous en étiez</h2>
     <p>Votre file d'attente, vos favoris, vos playlists et vos réglages sont ceux du site : une écoute commencée
     sur l'ordinateur continue sur le téléphone. Pour relier l'appli, scannez le QR code affiché par le site
-    (<strong>Réglages › Appareils connectés › Appairer un appareil</strong>), ou tapez l'adresse du serveur :
-    aucun mot de passe à saisir. Plusieurs comptes peuvent cohabiter.</p>
+    (<strong>Réglages › Appareils connectés › Appairer un appareil</strong>), ou entrez l'adresse du serveur,
+    votre e-mail et votre mot de passe. Plusieurs comptes peuvent cohabiter.</p>
     <h2>Ce qu'elle sait faire</h2>
     <ul>
       <li>Albums, Artistes, Explorer (ambiances, genres, décennies), Aléatoire, Playlists, Mes favoris ;</li>
       <li>recherche pendant la frappe, historique d'écoute ;</li>
-      <li>file d'attente synchronisée avec le site, mode infini ;</li>
+      <li>file d'attente synchronisée avec le site, mode infini, lecture continue ;</li>
+      <li>forme d'onde dans le lecteur ;</li>
+      <li>playlists : créer, renommer, partager, ajouter et retirer des pistes ;</li>
+      <li>appareils connectés (et appairage d'un autre appareil), export des données, suppression du compte ;</li>
       <li>thème clair ou sombre, en français et en anglais.</li>
     </ul>
   </div>
@@ -32,13 +38,25 @@ aucune musique et n'envoie rien ailleurs qu'à votre serveur.</p>
       <li>qualité du flux selon le réseau : une version Opus allégée sur les données mobiles ;</li>
       <li>écoutes gardées sur le téléphone hors connexion, puis envoyées au retour du réseau.</li>
     </ul>
-    <p>Bientôt : gestion du compte et des appareils, lecture continue, forme d'onde dans le lecteur, gestion
-    complète des playlists.</p>
+    <p>Prévu : changer son nom et son mot de passe dans l'appli (pour l'instant sur le site), réordonner les
+    pistes d'une playlist, fondu enchaîné, images de fond, tablettes, télécommande partagée, musique téléchargée pour l’écoute hors
+    connexion, Android Auto, widget, Chromecast.</p>
   </div>
 </section>
 
 <section class="page-note">
-  <h2>Disponibilité</h2>
-  <p>Android 12 ou plus récent. L'appli sera publiée bientôt ; les liens de téléchargement seront donnés ici.</p>
+  <h2>Télécharger</h2>
+  <p>Version de test <strong>1.0.0-rc.1</strong>, pour Android 12 ou plus récent. L'APK
+  (<code>rengaine-1.0.0-rc.1.apk</code>) est dans la
+  <a href="https://github.com/wootou/rengaine-android/releases/tag/v1.0.0-rc.1">version publiée sur GitHub</a>. Une publication sur le Play Store est prévue.</p>
+  <ul>
+    <li>Pas de mise à jour automatique en dehors du Play Store : surveillez les versions publiées, ou
+    utilisez <a href="https://github.com/ImranR98/Obtainium">Obtainium</a>.</li>
+    <li>Adresse du serveur en <code>https://</code> conseillée ; <code>http://</code> est accepté, avec un avertissement.</li>
+    <li>Pour vérifier qu'un APK vient bien de Rengaine, <code>apksigner verify --print-certs</code> doit afficher
+    cette empreinte SHA-256 du certificat : <code>C4:DD:73:38:7F:C0:CD:E5:3F:1B:17:BE:5E:41:C5:3D:58:A2:6C:A5:55:50:5D:39:91:7C:99:91:93:4A:CF:E2</code></li>
+    <li>Code source sur <a href="https://github.com/wootou/rengaine-android">GitHub</a>, sous licence MIT ; pour compiler l'appli vous-même,
+    voir <a href="https://github.com/wootou/rengaine-android/blob/main/BUILDING.md">BUILDING.md</a>.</li>
+  </ul>
 </section>
 </article>

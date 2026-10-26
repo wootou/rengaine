@@ -72,6 +72,7 @@ final class Indexer
             ) as $gone) {
                 $this->db->run('UPDATE storage_objects SET missing_since = CURRENT_TIMESTAMP(3) WHERE id = ?', [$gone['id']]);
                 $this->db->run('UPDATE images SET object_id = NULL WHERE object_id = ?', [$gone['id']]);
+                JobLog::resolve($this->db, (int) $gone['id']); // fichier disparu : ses erreurs n'ont plus d'objet
                 $dirty[(string) $gone['album_dir']] = true;
                 $job->count('missing');
             }
@@ -235,6 +236,7 @@ final class Indexer
                 );
                 $fresh[$id] = true;
                 $job->count('probed');
+                JobLog::resolve($this->db, $id, (string) $row['storage_key'], ['unreadable', 'probe_failed']);
             }
             $progress(sprintf('%d / %d fichiers audio lus', count($fresh), count($todo)));
         }

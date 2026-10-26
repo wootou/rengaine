@@ -82,7 +82,7 @@ The collation makes searches insensitive to case and accents.
 
 ```bash
 git clone https://github.com/wootou/rengaine.git /var/www/rengaine
-git -C /var/www/rengaine checkout v1.0.0   # a released version (the main branch moves on)
+git -C /var/www/rengaine checkout v1.0.1   # a released version (the main branch moves on)
 install -d -m 750 -o root -g www-data /etc/rengaine
 install -m 640 -o root -g www-data /var/www/rengaine/config/rengaine.ini.example /etc/rengaine/rengaine.ini
 editor /etc/rengaine/rengaine.ini          # see configuration.md

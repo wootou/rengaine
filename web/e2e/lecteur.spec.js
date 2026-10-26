@@ -142,6 +142,21 @@ test('affichage téléphone : rien ne déborde, le lecteur reste accessible @té
   await expect(page.locator('.queue-panel')).toBeVisible();
 });
 
+test('grand écran : la file ouverte, le contenu reste centré entre la barre latérale et la file', async ({ page }) => {
+  await page.setViewportSize({ width: 2560, height: 1200 });
+  await login(page);
+  await page.getByTitle("File d'attente").click();
+  await expect(page.locator('.queue-panel')).toBeVisible();
+  const box = await page.evaluate(() => {
+    const r = /** @type {HTMLElement} */ (document.querySelector('.content')).getBoundingClientRect();
+    const side = /** @type {HTMLElement} */ (document.querySelector('.top')).getBoundingClientRect().right;
+    const queue = /** @type {HTMLElement} */ (document.querySelector('.queue-panel')).getBoundingClientRect().left;
+    return { left: r.left - side, right: queue - r.right };
+  });
+  expect(box.right).toBeGreaterThanOrEqual(0);
+  expect(Math.abs(box.left - box.right)).toBeLessThanOrEqual(2);
+});
+
 test('déconnexion', async ({ page }) => {
   await login(page);
   await page.getByTitle('Réglages').click();

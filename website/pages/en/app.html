@@ -3,19 +3,25 @@
 <p class="lead">Rengaine for Android puts your library in your pocket. The app connects to your own Rengaine
 server and plays your music in the background, on the lock screen or over Bluetooth. It provides no music and
 sends nothing anywhere but your server.</p>
+<div class="actions">
+  <a class="button" href="https://github.com/wootou/rengaine-android/releases/tag/v1.0.0-rc.1">Download the APK from GitHub</a>
+</div>
 
 <section class="feature">
   <div>
     <h2>Pick up where you left off</h2>
     <p>Your queue, favourites, playlists and settings are the same as on the website: listening started on the
     computer continues on the phone. To link the app, scan the QR code shown by the website
-    (<strong>Settings › Connected devices › Pair a device</strong>), or type the server address: no password to
-    type. Several accounts can live side by side.</p>
+    (<strong>Settings › Connected devices › Pair a device</strong>), or enter the server address, your email
+    and your password. Several accounts can live side by side.</p>
     <h2>What it does</h2>
     <ul>
       <li>Albums, Artists, Explore (moods, genres, decades), Shuffle, Playlists, My favourites;</li>
       <li>search as you type, listening history;</li>
-      <li>queue synchronised with the website, endless mode;</li>
+      <li>queue synchronised with the website, endless mode, continuous play;</li>
+      <li>waveform in the player;</li>
+      <li>playlists: create, rename, share, add and remove tracks;</li>
+      <li>connected devices (and pairing another device), data export, account deletion;</li>
       <li>light or dark theme, in English and French.</li>
     </ul>
   </div>
@@ -32,13 +38,25 @@ sends nothing anywhere but your server.</p>
       <li>stream quality based on the network: a lighter Opus version on mobile data;</li>
       <li>plays kept on the phone while offline, then sent when the network is back.</li>
     </ul>
-    <p>Coming soon: account and device management, continuous play, waveform in the player, full playlist
-    management.</p>
+    <p>Planned: changing your name and password in the app (on the website for now), reordering the tracks
+    of a playlist, cross-fades, background images, tablets, shared remote control, downloads for offline listening,
+    Android Auto, widget, Chromecast.</p>
   </div>
 </section>
 
 <section class="page-note">
-  <h2>Availability</h2>
-  <p>Android 12 or later. The app will be published soon; download links will be given here.</p>
+  <h2>Download</h2>
+  <p>Test version <strong>1.0.0-rc.1</strong>, for Android 12 or later. The APK
+  (<code>rengaine-1.0.0-rc.1.apk</code>) is in the
+  <a href="https://github.com/wootou/rengaine-android/releases/tag/v1.0.0-rc.1">release on GitHub</a>. A Play Store release is planned.</p>
+  <ul>
+    <li>No automatic updates outside the Play Store: watch the releases, or use
+    <a href="https://github.com/ImranR98/Obtainium">Obtainium</a>.</li>
+    <li>A server address in <code>https://</code> is recommended; <code>http://</code> is accepted, with a warning.</li>
+    <li>To check that an APK really comes from Rengaine, <code>apksigner verify --print-certs</code> must show
+    this SHA-256 certificate fingerprint: <code>C4:DD:73:38:7F:C0:CD:E5:3F:1B:17:BE:5E:41:C5:3D:58:A2:6C:A5:55:50:5D:39:91:7C:99:91:93:4A:CF:E2</code></li>
+    <li>Source code on <a href="https://github.com/wootou/rengaine-android">GitHub</a>, under the MIT license; to build the app yourself, see
+    <a href="https://github.com/wootou/rengaine-android/blob/main/BUILDING.md">BUILDING.md</a>.</li>
+  </ul>
 </section>
 </article>

@@ -32,6 +32,28 @@ Nothing is ever overwritten. Doubtful cases (several albums mixed, missing artis
 stay in `inbox/` with their reason, shown in **Admin > Jobs**. Preview without moving anything:
 `rengaine inbox --essai`.
 
+### Why an album stays in `inbox/`
+
+| Reason shown | What to do |
+|---|---|
+| Artist not found (no “artist” tag) | Fill in the tag, or name the folder “Artist - Album”. |
+| No audio file in this folder | It only holds a cover or extra files: delete it, or add the tracks. |
+| The tracks belong to several albums | Drop one folder per album. For a selection of tracks taken from several albums, name the folder “VA - Name” (or “Various Artists - Name”, “Compilation - Name”…): it is filed as is under `Compilations/`. |
+| A file already has this name in the library | The album is probably already there: check, then delete the duplicate. |
+
+### Large imports
+
+Rengaine files complete albums while the upload goes on. A tool that restarts a full pass after any error
+can then send files that were already filed: rclone, for instance, starts the whole copy again (3 times by
+default) when a file that left `inbox/` has vanished in the meantime. For an import of tens of GB, either:
+
+- run `rclone copy --retries 1`;
+- upload into another folder (for instance `import/`), then move it to `inbox/` once the upload is done;
+- stop filing during the import (`systemctl stop rengaine-index.timer`), then start it again
+  (`systemctl start rengaine-index.timer`).
+
+Then run `rengaine inbox --essai` to see what will be filed.
+
 ## Scans
 
 `rengaine-index.timer` scans every 15 minutes, and only reads what changed (size, date, ETag). A renamed

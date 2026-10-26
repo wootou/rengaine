@@ -201,7 +201,8 @@ h1 .kind { display: block; font-weight: 600; margin-bottom: .3rem; }
 .app-nav .count, .tabs .count { display: inline-block; margin-left: auto; background: var(--accent); color: var(--on-accent); font-size: .7rem; font-weight: 700; border-radius: var(--pill); padding: 1px 7px; }
 .top .settings-link { margin-top: auto; }
 .content { padding: 2rem var(--gutter) 3rem; max-width: 1480px; margin: 0 auto; }
-.app.with-queue .content { margin-right: var(--queue-w); }
+/* La file réserve sa place sur .app : le contenu reste centré dans l'espace restant */
+.app.with-queue { padding-right: var(--queue-w); }
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
 .page-head h1 { margin: 0; }
 .filters { display: flex; gap: .5rem; }
@@ -662,7 +663,7 @@ button.danger.solid:hover:not(:disabled) { background: var(--danger); color: var
 
 /* ———————————————————————— Écrans moyens : la file passe par-dessus le contenu */
 @media (max-width: 1100px) {
-  .app.with-queue .content { margin-right: auto; }
+  .app.with-queue { padding-right: 0; }
   .queue-panel { box-shadow: var(--shadow); }
 }
 

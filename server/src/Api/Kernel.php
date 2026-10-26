@@ -27,7 +27,7 @@ use Musique\Storage\StorageException;
 final class Kernel
 {
     public const BASE = '/api/v2';
-    public const VERSION = '2.27.0';
+    public const VERSION = '2.28.0';
 
     private Router $router;
     private ?Database $db = null;

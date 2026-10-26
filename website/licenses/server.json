@@ -1,0 +1,19 @@
+{
+  "_doc": "Composants inclus dans le serveur et le lecteur web (même liste que THIRD_PARTY_NOTICES.md). « package » : version lue dans web/package-lock.json au build du site.",
+  "components": [
+    { "name": "React", "package": "react", "author": "Meta Platforms, Inc. and affiliates", "license": "MIT", "website": "https://react.dev/" },
+    { "name": "React DOM", "package": "react-dom", "author": "Meta Platforms, Inc. and affiliates", "license": "MIT", "website": "https://react.dev/" },
+    { "name": "qrcode-generator", "package": "qrcode-generator", "author": "Kazuhiko Arase", "license": "MIT", "website": "https://github.com/kazuhikoarase/qrcode-generator" },
+    { "name": "Material Icons", "author": "Google", "license": "Apache-2.0", "website": "https://github.com/google/material-design-icons",
+      "note": { "fr": "quelques icônes, reprises ou adaptées", "en": "a few icons, taken or adapted" } },
+    { "name": "Bricolage Grotesque", "author": "The Bricolage Grotesque Project Authors", "license": "OFL-1.1", "website": "https://github.com/ateliertriay/bricolage",
+      "note": { "fr": "police", "en": "typeface" } }
+  ],
+  "programs": [
+    { "name": "PHP, MariaDB, Apache ou Nginx", "nameEn": "PHP, MariaDB, Apache or Nginx", "license": "PHP License, GPL-2.0, Apache-2.0 / BSD-2-Clause", "use": { "fr": "obligatoires : exécution", "en": "required: runtime" } },
+    { "name": "FFmpeg", "website": "https://ffmpeg.org/", "license": "LGPL-2.1+ / GPL-2.0+", "use": { "fr": "obligatoire : tags, volume, conversion", "en": "required: tags, loudness, conversion" } },
+    { "name": "Essentia", "website": "https://essentia.upf.edu/", "license": "AGPL-3.0", "use": { "fr": "facultatif : tempo, tonalité, temps", "en": "optional: tempo, key, beats" } },
+    { "name": "Chromaprint", "website": "https://acoustid.org/chromaprint", "license": "LGPL-2.1+", "use": { "fr": "facultatif : empreintes acoustiques", "en": "optional: acoustic fingerprints" } },
+    { "name": "Mercure", "website": "https://mercure.rocks/", "license": "AGPL-3.0", "use": { "fr": "facultatif : télécommande en temps réel", "en": "optional: real-time remote control" } }
+  ]
+}

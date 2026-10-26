@@ -513,6 +513,26 @@ final class AdminController
         ], $rows), $total, $limit, $offset);
     }
 
+    /** POST /admin/job-errors/resolve : { ids: [...] } ou { all: true }. */
+    public function resolveJobErrors(array $params): Response
+    {
+        $in = new Input($this->ctx->request->json());
+        $ids = $in->intList('ids', 500, false);
+        $all = $in->bool('all', false);
+        if (($ids === null || $ids === []) === ($all !== true)) {
+            throw ApiError::invalid('ids', 'Indiquez « ids » (1 à 500 erreurs) ou « all: true », pas les deux');
+        }
+        $sql = 'UPDATE job_errors SET resolved_at = CURRENT_TIMESTAMP(3) WHERE resolved_at IS NULL';
+        $args = [];
+        if ($ids !== null) {
+            $sql .= ' AND id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+            $args = $ids;
+        }
+        $n = $this->ctx->db->run($sql, $args)->rowCount();
+        $this->ctx->audit('job_error.resolve', 'job_error', null, null, ['ids' => $ids, 'all' => $all === true, 'resolved' => $n]);
+        return Response::json(['resolved' => $n]);
+    }
+
     // ---------------------------------------------------------------- audit
 
     private static function parseDate(?string $v, string $field): ?string

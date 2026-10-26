@@ -32,6 +32,29 @@ Rien n'est jamais écrasé. Les cas douteux (plusieurs albums mélangés, artist
 présent) restent dans `inbox/` avec leur raison, visible dans **Admin > Tâches**. Aperçu sans rien
 déplacer : `rengaine inbox --essai`.
 
+### Pourquoi un album reste dans `inbox/`
+
+| Raison affichée | Que faire |
+|---|---|
+| Artiste introuvable (pas de tag « artist ») | Renseigner le tag, ou nommer le dossier « Artiste - Album ». |
+| Aucun fichier audio dans ce dossier | Il ne contient qu'une pochette ou des fichiers annexes : le supprimer, ou y ajouter les pistes. |
+| Les pistes portent plusieurs albums | Déposer un dossier par album. Pour une sélection de titres pris sur plusieurs albums, nommer le dossier « VA - Nom » (ou « Various Artists - Nom », « Compilation - Nom »…) : elle est rangée telle quelle dans `Compilations/`. |
+| Un fichier porte déjà ce nom dans la bibliothèque | L'album est sans doute déjà là : vérifier, puis supprimer le doublon. |
+
+### Gros import
+
+Rengaine range les albums complets pendant que l'envoi continue. Un outil qui relance une passe complète à
+la moindre erreur peut alors renvoyer des fichiers déjà rangés : rclone, par exemple, recommence toute la
+copie (3 fois par défaut) quand un fichier sorti de `inbox/` a disparu entre-temps. Pour un import de
+plusieurs dizaines de Go, au choix :
+
+- lancer `rclone copy --retries 1` ;
+- envoyer dans un autre dossier (par exemple `import/`), puis déplacer vers `inbox/` une fois l'envoi fini ;
+- arrêter le rangement pendant l'import (`systemctl stop rengaine-index.timer`), puis le relancer
+  (`systemctl start rengaine-index.timer`).
+
+Lancez ensuite `rengaine inbox --essai` pour voir ce qui sera rangé.
+
 ## Les scans
 
 `rengaine-index.timer` passe toutes les 15 minutes et ne relit que ce qui a changé (taille, date, ETag). Un

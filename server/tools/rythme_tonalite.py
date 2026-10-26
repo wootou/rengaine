@@ -13,6 +13,9 @@ bpmConfidence va de 0 à 5,3 (au-dessous de 1,5 : peu fiable) ; keyStrength, ene
 Énergie (pas de mesure toute faite dans Essentia) : 45 % volume moyen (RMS, de -20 à -8 dBFS), 35 % densité
 d'attaques (de 1,5 à 6 par seconde), 20 % brillance (centre de gravité du spectre, de 1000 à 4000 Hz).
 Dansabilité : algorithme Danceability d'Essentia (DFA), de 0,8 à 1,4 ramené entre 0 et 1.
+Pistes longues (plus de LONG_S, mixes et sets) : Essentia charge tout le morceau en mémoire (plus de 2 Go
+pour une heure) et refuse au-delà d'une certaine durée. On n'analyse alors que des extraits : BPM, tonalité,
+énergie et dansabilité sur BODY_S au milieu, grilles des temps sur EDGE_LOAD_S au début et à la fin.
 Code de sortie 1 et message sur la sortie d'erreur si le fichier est illisible.
 """
 import json
@@ -82,6 +85,52 @@ def beat_grid(beats, bpm: float):
     return {"intro": intro, "outro": outro} if intro or outro else None
 
 
+# Pistes longues : seuil, extrait du milieu, extraits du début et de la fin (en secondes)
+LONG_S = 20 * 60
+BODY_S = 10 * 60
+EDGE_LOAD_S = 60
+
+
+def load(filename: str, start: float, end: float):
+    """Extrait [start, end] en mono 44,1 kHz, sans changer le volume (EasyLoader baisse de 6 dB par défaut)."""
+    return es.EasyLoader(filename=filename, sampleRate=44100, startTime=start, endTime=end, replayGain=0)()
+
+
+def edge_grid(filename: str, start: float, end: float, head: bool):
+    """Grille des temps sur un extrait du début ou de la fin, en temps absolus du morceau."""
+    audio = load(filename, start, end)
+    if len(audio) < 44100 * 10:
+        return None
+    bpm, beats, _c, _e, _i = es.RhythmExtractor2013(method="multifeature")(audio)
+    t = np.asarray(beats, dtype=float) + start
+    if len(t) < 16:
+        return None
+    return local_grid(t[t <= t[0] + GRID_EDGE_S] if head else t[t >= t[-1] - GRID_EDGE_S], float(bpm))
+
+
+def long_track(filename: str, duration: int) -> int:
+    middle = duration / 2
+    audio = load(filename, middle - BODY_S / 2, middle + BODY_S / 2)
+    bpm, _beats, confidence, _est, _intervals = es.RhythmExtractor2013(method="multifeature")(audio)
+    key, mode, strength = es.KeyExtractor(profileType="bgate")(audio)
+    dance, _dfa = es.Danceability()(audio)
+    nrg = energy(audio)
+    del audio
+    intro = edge_grid(filename, 0, EDGE_LOAD_S, True)
+    outro = edge_grid(filename, max(0, duration - EDGE_LOAD_S), duration + 1, False)
+    print(json.dumps({
+        "bpm": round(float(bpm), 1),
+        "bpmConfidence": round(float(confidence), 2),
+        "key": key,
+        "scale": mode,
+        "keyStrength": round(float(strength), 3),
+        "energy": round(nrg, 3),
+        "danceability": round(scale(float(dance), 0.8, 1.4), 3),
+        "beatGrid": {"intro": intro, "outro": outro} if intro or outro else None,
+    }))
+    return 0
+
+
 def main() -> int:
     if sys.argv[1:] == ["--version"]:
         print(f"essentia {essentia.__version__};{METHOD}")
@@ -90,6 +139,9 @@ def main() -> int:
         print("usage : rythme_tonalite.py <fichier>", file=sys.stderr)
         return 2
     try:
+        duration = int(es.MetadataReader(filename=sys.argv[1])()[-4])
+        if duration > LONG_S:
+            return long_track(sys.argv[1], duration)
         audio = es.MonoLoader(filename=sys.argv[1], sampleRate=44100)()
     except Exception as e:  # fichier illisible
         print(f"lecture impossible : {e}", file=sys.stderr)

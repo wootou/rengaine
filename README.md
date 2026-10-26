@@ -6,7 +6,7 @@
 
 🌐 **Website and documentation: [rengaine.org](https://rengaine.org)**
 
-**Status:** version 1.0 in preparation. **Android app:** source and APK at [rengaine-android](https://github.com/wootou/rengaine-android/releases), release candidate (1.0.0-rc), being tested.
+**Status:** version 1.0.1 (see [CHANGELOG.md](CHANGELOG.md)). **Android app:** source and APK at [rengaine-android](https://github.com/wootou/rengaine-android/releases), test version 1.0.0-rc.1.
 
 
 <picture>

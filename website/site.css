@@ -36,6 +36,7 @@ footer { border-top: 1px solid var(--line); color: var(--muted); text-align: cen
 .hero { padding: 3rem 0 2rem; max-width: 760px; }
 .hero h1 { font-size: clamp(2rem, 6vw, 3.2rem); line-height: 1.1; margin: 0 0 1rem; letter-spacing: -.02em; }
 .hero p { font-size: 1.2rem; color: var(--muted); margin: 0 0 1.5rem; }
+.hero p.hero-app { font-size: 1rem; margin: 1.2rem 0 0; }
 .actions { display: flex; flex-wrap: wrap; gap: .8rem; }
 .button { display: inline-flex; align-items: center; min-height: 48px; padding: .7rem 1.3rem; border-radius: 999px;
   background: var(--accent); color: var(--on-accent); font-weight: 700; text-decoration: none; }
@@ -93,3 +94,12 @@ footer { border-top: 1px solid var(--line); color: var(--muted); text-align: cen
 .legal ul { padding-left: 1.2rem; }
 .translation-note { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .7rem 1rem; color: var(--muted); }
 .updated { color: var(--muted); margin-top: 2.5rem; font-size: .92rem; }
+/* Licences open source : une ligne par bibliothèque (nom et version, puis auteur · licence) */
+.libs { list-style: none; padding: 0 !important; margin: 1rem 0 1.5rem; border-top: 1px solid var(--line); }
+.libs li { display: flex; flex-direction: column; gap: .15rem; padding: .6rem 0; border-bottom: 1px solid var(--line); }
+.lib-name { font-weight: 600; overflow-wrap: anywhere; }
+.lib-version { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.lib-meta { color: var(--muted); font-size: .92rem; overflow-wrap: anywhere; }
+.licenses pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.licenses h3 { scroll-margin-top: 1rem; }
+.lib-name small { font-weight: 400; color: var(--muted); }

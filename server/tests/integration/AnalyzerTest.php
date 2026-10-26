@@ -17,6 +17,7 @@ use Musique\Library\AlbumBuilder;
 use Musique\Library\Genres;
 use Musique\Library\Images;
 use Musique\Library\Indexer;
+use Musique\Jobs\JobLog;
 use Musique\Library\Probe;
 use Musique\Library\SameRecordings;
 use Musique\Log\Logger;
@@ -178,7 +179,7 @@ final class AnalyzerTest extends TestCase
         $this->assertSame(Analyzer::MAX_ATTEMPTS, (int) $q['attempts']);
         $this->assertTrue($q['last_error'] !== null && $q['locked_by'] === null, 'erreur notée, verrou rendu');
         $this->assertSame(0, $this->analyze()['errors'] ?? 0, 'abandonnée : plus reprise');
-        $this->assertSame(Analyzer::MAX_ATTEMPTS, (int) $this->db->value("SELECT COUNT(*) FROM job_errors WHERE code = 'analysis_failed'"));
+        $this->assertSame(1, (int) $this->db->value("SELECT COUNT(*) FROM job_errors WHERE code = 'analysis_failed'"), 'erreur ouverte : pas de doublon');
 
         // --retry la remet en file
         $analyzer = new Analyzer($this->db, $this->storage, $this->logger, "$this->base/cache/tmp", 2);
@@ -195,6 +196,94 @@ final class AnalyzerTest extends TestCase
         // Verrou expiré (analyseur arrêté brutalement) : la piste est reprise
         $this->db->run('UPDATE analysis_queue SET locked_until = CURRENT_TIMESTAMP(3) - INTERVAL 1 SECOND');
         $this->assertSame(1, $this->analyze()['analyzed'] ?? 0, 'verrou expiré : reprise');
+    }
+
+    /** Processus de cette machine qui n'existe pas (au-delà du pid_max de Linux). */
+    private static function deadWorker(): string
+    {
+        return gethostname() . ':4194999';
+    }
+
+    public function testPassageTueRepris(): void
+    {
+        foreach (['Un', 'Deux', 'Trois'] as $i => $t) {
+            $this->audio("Test - Tue/0$i - $t.flac", ['album' => 'Tue', 'artist' => 'Test', 'title' => $t]);
+        }
+        $this->index();
+        // Passage tué (manque de mémoire) pendant l'analyse de Un et Deux : verrou encore valide, tâche « en cours »
+        $this->db->run("UPDATE analysis_queue q JOIN tracks t ON t.id = q.track_id SET q.locked_by = ?, q.attempts = 1,
+                               q.locked_until = CURRENT_TIMESTAMP(3) + INTERVAL 30 MINUTE WHERE t.title IN ('Un', 'Deux')", [self::deadWorker()]);
+        $this->db->run("INSERT INTO jobs (type, status, started_at, worker) VALUES ('analyze', 'running', CURRENT_TIMESTAMP(3), ?)", [self::deadWorker()]);
+        $ghost = (int) $this->db->pdo()->lastInsertId();
+        $this->db->run("INSERT INTO jobs (type, status, started_at, worker) VALUES ('index', 'running', CURRENT_TIMESTAMP(3), 'autre-machine:1')");
+        $elsewhere = (int) $this->db->pdo()->lastInsertId();
+
+        $stats = $this->analyze();
+        $this->assertSame([3, 0], [$stats['analyzed'] ?? 0, $stats['errors'] ?? 0], 'pistes rendues tout de suite et analysées');
+        $this->assertSame(0, (int) $this->db->value('SELECT COUNT(*) FROM analysis_queue WHERE (steps & ?) <> 0', [Analyzer::STEPS_DONE]));
+        $this->assertSame('failed', $this->db->value('SELECT status FROM jobs WHERE id = ?', [$ghost]), 'tâche fantôme clôturée');
+        $this->assertSame('running', $this->db->value('SELECT status FROM jobs WHERE id = ?', [$elsewhere]), 'autre machine : pas vérifiable, pas touchée');
+        $this->assertTrue(str_contains((string) file_get_contents("$this->base/test.log"), 'Analyse interrompue'));
+    }
+
+    public function testProcessusTueSignale(): void
+    {
+        // Un « Essentia » qui se fait tuer comme par le manque de mémoire : seule sa piste est en erreur
+        $this->audio('Test - Signal/01 - Un.flac', ['album' => 'Signal', 'artist' => 'Test', 'title' => 'Un']);
+        $this->index();
+        file_put_contents("$this->base/tue.sh", "kill -9 \$\$\n");
+        $rhythm = new Rhythm('/bin/sh', "$this->base/tue.sh");
+        $stats = (new Analyzer($this->db, $this->storage, $this->logger, "$this->base/cache/tmp", 2, 900, $rhythm))->run();
+        $this->assertSame(1, $stats['errors'] ?? 0);
+        $msg = (string) $this->db->value('SELECT last_error FROM analysis_queue');
+        $this->assertTrue(str_contains($msg, 'signal 9') && str_contains($msg, 'mémoire'), $msg);
+    }
+
+    public function testErreursSansDoublonEtCloturees(): void
+    {
+        // Un fichier illisible n'est signalé qu'une fois, quel que soit le nombre de scans
+        @mkdir("$this->root/Test - Abime", 0755, true);
+        file_put_contents("$this->root/Test - Abime/01 - Abime.mp3", random_bytes(4096));
+        $this->index();
+        $this->index();
+        $open = fn (): int => (int) $this->db->value("SELECT COUNT(*) FROM job_errors WHERE code = 'probe_failed' AND resolved_at IS NULL");
+        $this->assertSame([1, 1], [$open(), (int) $this->db->value('SELECT COUNT(*) FROM job_errors')]);
+        // Le fichier disparaît : l'erreur se clôt
+        unlink("$this->root/Test - Abime/01 - Abime.mp3");
+        $this->index();
+        $this->assertSame(0, $open());
+        // Fichier remplacé par un bon : relu, erreur close
+        file_put_contents("$this->root/Test - Abime/01 - Abime.mp3", random_bytes(4096));
+        $this->index();
+        $this->assertSame(1, $open(), 'nouvelle erreur après résolution');
+        unlink("$this->root/Test - Abime/01 - Abime.mp3");
+        $this->audio('Test - Abime/01 - Abime.mp3', ['album' => 'Abime', 'artist' => 'Test', 'title' => 'Abime']);
+        $this->index();
+        $this->assertSame(0, $open(), 'relu sans erreur : close');
+        $this->assertSame(0, JobLog::resolve($this->db, null, null));
+    }
+
+    public function testPisteLongueAnalyseeParExtraits(): void
+    {
+        $rhythm = Rhythm::fromConfig(Config::load());
+        if ($rhythm === null) {
+            $this->skip('Essentia absent (/opt/rengaine-analyse)');
+        }
+        // 21 min 10 s (au-delà de 20 min) : un battement toutes les 0,5 s sur une note tenue
+        $path = "$this->root/Test - Set/01 - Set.flac";
+        mkdir(dirname($path), 0755, true);
+        $expr = '0.3*sin(2*PI*220*t)+0.8*exp(-30*mod(t\\,0.5))*sin(2*PI*60*t)';
+        exec('ffmpeg -v error -y -f lavfi -i ' . escapeshellarg("aevalsrc='$expr':s=22050:d=1270") . ' -metadata album=Set -metadata artist=Test -metadata title=Set -c:a flac ' . escapeshellarg($path), $out, $code);
+        $this->assertSame(0, $code, 'ffmpeg');
+        $this->index();
+        $stats = (new Analyzer($this->db, $this->storage, $this->logger, "$this->base/cache/tmp", 1, 900, $rhythm))->run();
+        $this->assertSame([1, 0], [$stats['analyzed'] ?? 0, $stats['errors'] ?? 0]);
+        $a = $this->analysis('Set');
+        $this->assertTrue(abs((float) $a['bpm'] - 120) < 1, "BPM : {$a['bpm']}");
+        $grid = json_decode((string) $a['beat_grid'], true);
+        foreach (['intro', 'outro'] as $end) {
+            $this->assertTrue(is_array($grid[$end] ?? null) && abs($grid[$end]['bpm'] - 120) < 0.5, "grille $end : " . json_encode($grid));
+        }
     }
 
     public function testFileEcouteeEtFavorisAnalysesDAbord(): void

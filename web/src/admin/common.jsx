@@ -30,7 +30,7 @@ export const ACTION = /** @type {Record<string, string>} */ (labels(() => ({
   'token.pair': tr('Appli appairée'), 'pairing.create': tr('Code d’appairage'), 'server.settings': tr('Réglages du serveur'),
   'album.update': tr('Album corrigé'), 'track.update': tr('Piste corrigée'), 'correction.revert': tr('Correction annulée'),
   'genre.create': tr('Genre créé'), 'genre.update': tr('Genre modifié'), 'genre.delete': tr('Genre supprimé'), 'genre_alias.map': tr('Tag de genre rattaché'),
-  'job.create': tr('Tâche demandée'), 'album.create': tr('Album séparé'), 'album.merge': tr('Albums fusionnés'),
+  'job.create': tr('Tâche demandée'), 'job_error.resolve': tr('Erreurs marquées comme résolues'), 'album.create': tr('Album séparé'), 'album.merge': tr('Albums fusionnés'),
   'artist.update': tr('Artiste corrigé'), 'artist.merge': tr('Artistes fusionnés'), 'change_set.create': tr('Lot proposé'), 'history.clear': tr('Historique d’écoute effacé'),
   'change_set.apply': tr('Lot appliqué'), 'change_set.reject': tr('Lot refusé'), 'change_set.revert': tr('Lot annulé'),
   'library.dedup': tr('MP3 en double retirés'),

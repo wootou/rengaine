@@ -157,6 +157,7 @@ final class Routes
         $r->add('PATCH', '/admin/backgrounds/{id}', [B::class, 'adminUpdateBackground'], $admin);
         $r->add('DELETE', '/admin/backgrounds/{id}', [B::class, 'adminDeleteBackground'], $admin);
         $r->add('GET', '/admin/job-errors', [Ad::class, 'listJobErrors'], $adminAgent);
+        $r->add('POST', '/admin/job-errors/resolve', [Ad::class, 'resolveJobErrors'], $admin);
         $r->add('GET', '/admin/audit', [Ad::class, 'listAudit'], $admin);
         $r->add('GET', '/admin/logs', [Ad::class, 'listLogs'], $admin);
 

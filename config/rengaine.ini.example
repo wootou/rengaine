@@ -58,7 +58,8 @@ dossier = "/var/cache/rengaine"    ; extracted covers, thumbnails, conversions, 
 processus = 8                     ; ffprobe processes in parallel
 
 [analyse]                         ; audio analysis (loudness, silences, tempo, key, fingerprints)
-processus = 2                     ; parallel workers; default: number of CPU cores
+processus = 2                     ; parallel workers (about 1 GB of memory each; with S3, local disk too:
+                                  ; see docs/configuration.md); default: number of CPU cores
 python = "/opt/rengaine-analyse/bin/python"  ; Python with Essentia (tempo, key, beats); "" = skip
 fpcalc = "fpcalc"                 ; Chromaprint's fpcalc (duplicate recordings); "" = skip
 

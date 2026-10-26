@@ -99,15 +99,17 @@ final class Inbox
                 $plans[] = ['dir' => $dir] + $res;
                 if ($res['status'] === 'filed') {
                     $filed[] = (string) $res['targetDir'];
+                    JobLog::resolve($this->db, null, $dir, ['inbox_blocked']);
                 }
                 $progress(sprintf('%s : %s%s', $dir, $res['status'], isset($res['message']) ? " ({$res['message']})" : ''));
             }
             if (!$dryRun) {
                 // Dossiers retirés du dépôt par quelqu'un : plus rien à suivre. Rangements anciens oubliés.
                 $present = array_map(static fn ($d) => hash('sha256', (string) $d, true), array_keys($groups));
-                foreach ($this->db->all("SELECT id, source_hash FROM inbox_items WHERE status <> 'filed'") as $r) {
+                foreach ($this->db->all("SELECT id, source_hash, source_dir FROM inbox_items WHERE status <> 'filed'") as $r) {
                     if (!in_array($r['source_hash'], $present, true)) {
                         $this->db->run('DELETE FROM inbox_items WHERE id = ?', [$r['id']]);
+                        JobLog::resolve($this->db, null, (string) $r['source_dir'], ['inbox_blocked']);
                     }
                 }
                 $this->db->run("DELETE FROM inbox_items WHERE status = 'filed' AND filed_at < CURRENT_TIMESTAMP(3) - INTERVAL ? DAY", [self::KEEP_FILED_DAYS]);

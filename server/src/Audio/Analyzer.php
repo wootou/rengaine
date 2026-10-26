@@ -23,6 +23,7 @@ namespace Musique\Audio;
 
 use Musique\Db\Database;
 use Musique\Jobs\JobLog;
+use Musique\Jobs\Worker;
 use Musique\Library\Images;
 use Musique\Library\SameRecordings;
 use Musique\Log\Logger;
@@ -39,6 +40,8 @@ final class Analyzer
     /** Au-delà, une piste reste dans la file en échec (voir `rengaine analyze --retry`). */
     public const MAX_ATTEMPTS = 3;
     private const LOCK_MINUTES = 30;
+    /** Début de last_error d'une piste dont l'analyse a été interrompue (passage tué ou en échec). */
+    private const INTERRUPTED = 'interrompu';
     public const PRIORITY_QUEUED = 5;
     public const PRIORITY_FAVORITE = 10;
     public const PRIORITY_PLAYED = 20;
@@ -48,6 +51,8 @@ final class Analyzer
     private ?string $version = null;
     /** Étapes que cet analyseur sait faire. */
     private int $mask;
+    /** @var list<int> pistes en échec pendant ce passage : réessayées au passage suivant, pas tout de suite */
+    private array $failed = [];
 
     public function __construct(
         private readonly Database $db,
@@ -59,7 +64,7 @@ final class Analyzer
         private readonly ?Rhythm $rhythm = null,
         private readonly ?Fingerprint $fingerprint = null,
     ) {
-        $this->worker = gethostname() . ':' . getmypid();
+        $this->worker = Worker::id();
         $this->mask = self::STEPS_DONE | ($rhythm !== null ? self::STEPS_RHYTHM : 0) | ($fingerprint !== null ? self::STEP_FINGERPRINT : 0);
     }
 
@@ -109,6 +114,7 @@ final class Analyzer
             throw new \RuntimeException("Dossier temporaire impossible à créer : {$this->tmpDir}");
         }
         $this->cleanTmp();
+        $this->releaseOrphans();
         $this->prioritize();
         // File vide : pas de ligne dans le journal des tâches (le minuteur passe toutes les 10 min)
         if ($this->db->value(
@@ -123,22 +129,35 @@ final class Analyzer
             return [];
         }
         $job = new JobLog($this->db, $this->logger, 'analyze', array_filter(['limit' => $limit]), null, $queuedJobId);
+        $this->failed = [];
         $t0 = microtime(true);
         $claimed = 0;
         /** @var array<int, array<string, mixed>> $running piste → tâche */
         $running = [];
         try {
             $empty = false;
+            // Une piste « suspecte » (son passage précédent a été tué) est analysée seule : si elle fait
+            // encore tomber le passage, les autres pistes ne perdent pas une tentative avec elle.
+            $solo = false;
+            $onlySuspects = false;
             while (true) {
-                while (!$empty && count($running) < $this->parallel && ($limit === null || $claimed < $limit)) {
-                    $task = $this->claim($job);
+                if ($running === []) {
+                    $solo = false;
+                }
+                while (!$empty && !$solo && count($running) < $this->parallel && ($limit === null || $claimed < $limit)) {
+                    if ($onlySuspects && $running !== []) {
+                        break;
+                    }
+                    $task = $this->claim($job, $running === [], $onlySuspects);
                     if ($task === null) {
-                        $empty = true;
+                        // Plus de piste ordinaire ; il peut rester des suspectes, qu'on prendra seules
+                        $running === [] ? $empty = true : $onlySuspects = true;
                         break;
                     }
                     $claimed++;
                     if ($task !== false) {
                         $running[$task['track_id']] = $task;
+                        $solo = $task['suspect'];
                         $this->next($running[$task['track_id']]);
                     }
                 }
@@ -171,7 +190,7 @@ final class Analyzer
         } catch (\Throwable $e) {
             foreach ($running as $task) {
                 $this->kill($task);
-                $this->release((int) $task['track_id'], 'interrompu : ' . $e->getMessage());
+                $this->release((int) $task['track_id'], self::INTERRUPTED . ' : ' . $e->getMessage());
             }
             $job->fail($e);
             throw $e;
@@ -184,14 +203,18 @@ final class Analyzer
      * Prend la prochaine piste de la file. null = file vide ; false = piste écartée (rien à mesurer).
      * @return array<string, mixed>|null|false
      */
-    private function claim(JobLog $job): array|null|false
+    private function claim(JobLog $job, bool $alone, bool $suspectsOnly = false): array|null|false
     {
-        $row = $this->db->transaction(function (): ?array {
+        $row = $this->db->transaction(function () use ($alone, $suspectsOnly): ?array {
+            $suspect = "COALESCE(last_error LIKE '" . self::INTERRUPTED . "%', 0)";
             $row = $this->db->one(
-                'SELECT track_id, enqueued_at, steps + 0 AS bits FROM analysis_queue
+                "SELECT track_id, enqueued_at, steps + 0 AS bits, $suspect AS suspect FROM analysis_queue
                   WHERE (steps & ?) <> 0 AND attempts < ?
-                    AND (locked_until IS NULL OR locked_until < CURRENT_TIMESTAMP(3))
-                  ORDER BY priority, enqueued_at LIMIT 1 FOR UPDATE SKIP LOCKED',
+                    AND (locked_until IS NULL OR locked_until < CURRENT_TIMESTAMP(3))"
+                . ($alone ? '' : " AND NOT $suspect")
+                . ($suspectsOnly ? " AND $suspect" : '')
+                . ($this->failed === [] ? '' : ' AND track_id NOT IN (' . implode(',', $this->failed) . ')')
+                . ' ORDER BY ' . ($alone ? "$suspect DESC, " : '') . 'priority, enqueued_at LIMIT 1 FOR UPDATE SKIP LOCKED',
                 [$this->mask, self::MAX_ATTEMPTS]
             );
             if ($row !== null) {
@@ -230,7 +253,7 @@ final class Analyzer
         $needRhythm = $this->rhythm !== null && ($bits & self::STEPS_RHYTHM) !== 0;
         $needFingerprint = $this->fingerprint !== null && ($bits & self::STEP_FINGERPRINT) !== 0;
         $task = [
-            'track_id' => $trackId, 'enqueued_at' => $row['enqueued_at'], 'best' => $best,
+            'track_id' => $trackId, 'enqueued_at' => $row['enqueued_at'], 'best' => $best, 'suspect' => (bool) $row['suspect'],
             'steps' => [], 'proc' => null, 'error' => null, 'result' => null, 'rhythm' => null, 'fingerprint' => null, 'hashes' => [], 'pictures' => [], 'tmp' => [],
             'measure' => $needMeasure, 'tags' => self::tagValues($files),
         ];
@@ -281,6 +304,7 @@ final class Analyzer
         if ($task['error'] !== null) {
             $msg = self::scrub((string) $task['error']);
             $this->release($trackId, $msg);
+            $this->failed[] = $trackId;
             $job->error('analysis_failed', $msg, (string) $task['best']['storage_key'], (int) $task['best']['object_id']);
             return;
         }
@@ -323,6 +347,7 @@ final class Analyzer
                 [$this->mask, $trackId]
             );
             $this->db->run('DELETE FROM analysis_queue WHERE track_id = ? AND steps + 0 = 0', [$trackId]);
+            JobLog::resolve($this->db, (int) $task['best']['object_id'], (string) $task['best']['storage_key'], ['analysis_failed']);
             $albumId = $this->db->value('SELECT album_id FROM tracks WHERE id = ?', [$trackId]);
             if ($albumId !== null) {
                 $this->refreshAlbum((int) $albumId);
@@ -557,6 +582,9 @@ final class Analyzer
 
         if ($timedOut) {
             $task['error'] = "$step[0] : délai dépassé ({$this->timeoutSeconds} s)";
+        } elseif ($status['signaled'] ?? false) {
+            $sig = (int) $status['termsig'];
+            $task['error'] = "$step[0] : arrêté par le signal $sig" . ($sig === 9 ? ' (mémoire insuffisante ?)' : '');
         } elseif ($code !== 0) {
             $task['error'] = "$step[0] : code $code — " . trim(mb_substr(trim($stderr), -500));
         } elseif ($step[0] === 'measure') {
@@ -612,11 +640,27 @@ final class Analyzer
         return $this->tmpDir . '/analyse-' . getmypid() . '-' . bin2hex(random_bytes(6));
     }
 
-    /** Fichiers laissés par un analyseur arrêté brutalement. */
+    /**
+     * Pistes prises par un passage tué (manque de mémoire, SIGKILL) : rendues tout de suite, sans attendre
+     * la fin du verrou. Leur tentative reste comptée ; elles seront analysées seules (voir run()).
+     */
+    private function releaseOrphans(): void
+    {
+        foreach ($this->db->all('SELECT track_id, locked_by FROM analysis_queue WHERE locked_by IS NOT NULL') as $r) {
+            if (Worker::isGone($r['locked_by'])) {
+                $this->release((int) $r['track_id'], self::INTERRUPTED . ' : passage arrêté pendant l’analyse (mémoire insuffisante ?)');
+                $this->logger->warning('Analyse interrompue : piste rendue à la file', ['track' => (int) $r['track_id'], 'worker' => $r['locked_by']]);
+            }
+        }
+    }
+
+    /** Fichiers laissés par un analyseur arrêté brutalement (processus disparu, ou plus de 6 h). */
     private function cleanTmp(): void
     {
+        $host = gethostname();
         foreach (glob($this->tmpDir . '/analyse-*') ?: [] as $f) {
-            if (@filemtime($f) < time() - 6 * 3600) {
+            $gone = preg_match('/^analyse-(\d+)-/', basename($f), $m) === 1 && Worker::isGone("$host:{$m[1]}");
+            if ($gone || @filemtime($f) < time() - 6 * 3600) {
                 @unlink($f);
             }
         }

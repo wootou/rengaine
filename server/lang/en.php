@@ -269,6 +269,7 @@ return [
     'Aucune IA configurée : ajoutez la section [ia] de rengaine.ini' => 'No AI configured: add the [ia] section to rengaine.ini',
     'Aucune IA configurée (section [ia] de rengaine.ini)' => 'No AI configured ([ia] section of rengaine.ini)',
     'Créez d’abord un compte agent (Admin > Comptes) : l’IA travaille sous son nom' => 'Create an agent account first (Admin > Accounts): the AI works under its name',
+    'Indiquez « ids » (1 à 500 erreurs) ou « all: true », pas les deux' => 'Give “ids” (1 to 500 errors) or “all: true”, not both',
     'Compte agent introuvable ou suspendu' => 'Agent account not found or suspended',
     'Arguments illisibles : un objet JSON est attendu' => 'Unreadable arguments: a JSON object is expected',
     'Résultat tronqué : demandez une page plus petite (limit, offset).' => 'Result truncated: ask for a smaller page (limit, offset).',

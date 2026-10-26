@@ -422,6 +422,22 @@ final class AdminApiTest extends ApiCase
         $this->assertContract($this->admin('GET', '/api/v2/admin/jobs?type=index'), 'adminListJobs', 200);
         $this->assertContract($this->admin('GET', '/api/v2/admin/job-errors?open=false'), 'adminListJobErrors', 200);
         $this->assertContract($this->as($this->token('agent'), 'GET', '/api/v2/admin/job-errors'), 'adminListJobErrors', 200);
+
+        // Marquer comme résolues : une par une, ou toutes
+        foreach (['a.mp3', 'b.mp3', 'c.mp3'] as $k) {
+            $this->db->run("INSERT INTO job_errors (job_id, storage_key, code, message) VALUES (?, ?, 'probe_failed', 'illisible')", [$id, "Essai/$k"]);
+        }
+        $ids = array_map('intval', array_column($this->db->all("SELECT id FROM job_errors WHERE storage_key LIKE 'Essai/%' ORDER BY id"), 'id'));
+        $r = $this->admin('POST', '/api/v2/admin/job-errors/resolve', ['ids' => [$ids[0]]]);
+        $this->assertContract($r, 'adminResolveJobErrors', 200);
+        $this->assertSame(1, $r->data()['resolved']);
+        $this->assertSame(0, $this->admin('POST', '/api/v2/admin/job-errors/resolve', ['ids' => [$ids[0]]])->data()['resolved'], 'déjà résolue');
+        $this->assertError($this->admin('POST', '/api/v2/admin/job-errors/resolve', []), 400, 'bad_request', 'adminResolveJobErrors');
+        $this->assertError($this->admin('POST', '/api/v2/admin/job-errors/resolve', ['ids' => [$ids[1]], 'all' => true]), 400, 'bad_request', 'adminResolveJobErrors');
+        $this->assertError($this->as($this->token('agent'), 'POST', '/api/v2/admin/job-errors/resolve', ['all' => true]), 403, 'forbidden', 'adminResolveJobErrors');
+        $this->assertTrue($this->admin('POST', '/api/v2/admin/job-errors/resolve', ['all' => true])->data()['resolved'] >= 2);
+        $this->assertSame(0, (int) $this->db->value('SELECT COUNT(*) FROM job_errors WHERE resolved_at IS NULL'));
+        $this->assertSame('job_error.resolve', $this->db->value('SELECT action FROM audit_log ORDER BY id DESC LIMIT 1'));
     }
 
     public function testDepotDemandeDepuisLAdmin(): void

@@ -35,6 +35,25 @@ Permissions the access key needs on that bucket:
 A move is a server-side copy (`x-amz-copy-source`) followed by a delete. A read-only key (list and get)
 is enough if you never use `inbox/` nor set files aside from the admin.
 
+## Audio analysis
+
+`[analyse] processus` is the number of tracks analysed at the same time (default: the number of CPU
+cores). Start with 2 or 3, and raise it while watching memory and disk:
+
+- **Memory**: count about 1 GB per worker. Essentia loads the whole track; tracks longer than 20 minutes
+  (mixes, DJ sets) are therefore analysed on excerpts (10 minutes in the middle, the first and last
+  minute).
+- **Local disk, with S3 storage**: each track being analysed is first downloaded whole into
+  `[cache] dossier` (`tmp/` subfolder), then deleted. Keep free at least the number of workers times your
+  largest file (a one-hour hi-res FLAC exceeds 1 GB). A full disk also blocks PHP-FPM, and the site
+  stops answering.
+
+If memory still runs out, the kernel kills the biggest process, an analysis: with
+`OOMPolicy=continue` (in the provided `rengaine-analyze.service`) only that track is marked in error.
+A track is abandoned after 3 failures; `rengaine analyze --retry` puts the abandoned tracks back in the
+queue. Read errors close by themselves once the file is read again without error, or deleted; the others
+are closed from **Admin > Jobs**.
+
 ## Mail
 
 Without `[smtp] hote` and `expediteur`, Rengaine sends no mail at all; everything else works. With mail:

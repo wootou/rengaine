@@ -10,6 +10,7 @@ third-party work.
 | [React](https://react.dev/) and React DOM | MIT | User interface |
 | [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) | MIT | Pairing QR code |
 | [Material Icons](https://github.com/google/material-design-icons) (Google) | Apache License 2.0 | Several icon paths in `web/src/components/Icon.jsx` are taken from or adapted from Material Icons |
+| [Bricolage Grotesque](https://github.com/ateliertriay/bricolage) (The Bricolage Grotesque Project Authors) | SIL Open Font License 1.1 | Typeface of the web player (`web/src/fonts/`, license in `web/src/fonts/OFL.txt`) |
 
 Build and test tools (Vite, Vitest, Playwright, TypeScript, Redocly, openapi-typescript…) are only used
 during development; their licenses are listed in `web/package-lock.json`.

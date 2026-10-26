@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: API Rengaine
-  version: 2.27.0
+  version: 2.28.0
   summary: Bibliothèque musicale, lecture, comptes et administration.
   license:
     name: Usage privé
@@ -2899,6 +2899,48 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/JobErrorPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/job-errors/resolve:
+    post:
+      tags: [admin-taches]
+      operationId: adminResolveJobErrors
+      summary: Marquer des erreurs comme résolues (depuis 2.28.0)
+      description: |
+        Les erreurs se clôturent aussi d'elles-mêmes : fichier relu sans erreur, fichier disparu,
+        piste enfin analysée, dossier d'`inbox/` rangé ou retiré. Une erreur ouverte n'est jamais
+        enregistrée deux fois (même fichier, même code). `ids` ou `all`, pas les deux.
+      x-priority: P1
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: {type: integer, minimum: 1}
+                all:
+                  type: boolean
+                  const: true
+                  description: Toutes les erreurs encore ouvertes
+      responses:
+        "200":
+          description: Nombre d'erreurs clôturées (celles déjà résolues ne comptent pas)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resolved]
+                properties:
+                  resolved: {type: integer, minimum: 0}
+        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
 

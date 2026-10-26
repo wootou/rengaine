@@ -10,6 +10,9 @@ Group=www-data
 ExecStart=/usr/bin/php /var/www/rengaine/server/bin/rengaine analyze
 # Code 3 = passage terminé avec des pistes en erreur (visibles dans l'admin) : pas un échec du service
 SuccessExitStatus=3
+# Manque de mémoire : le noyau tue le plus gros processus (une analyse Essentia). Le passage continue,
+# seule cette piste est notée en erreur ; sans cette ligne, systemd arrêterait tout le service.
+OOMPolicy=continue
 # Tâche longue (première analyse d'une grosse bibliothèque) : le site passe avant
 Nice=15
 CPUWeight=20

@@ -42,6 +42,7 @@ const PAGES = /** @type {const} */ ({
   screenshots: { fr: ['captures/', 'Captures'], en: ['screenshots/', 'Screenshots'] },
   download: { fr: ['telecharger/', 'Télécharger'], en: ['download/', 'Download'] },
   legal: { fr: ['mentions-legales/', 'Mentions légales'], en: ['legal/', 'Legal notice'] },
+  licenses: { fr: ['licences/', 'Licences open source'], en: ['licenses/', 'Open source licenses'] },
 });
 const NAV = /** @type {const} */ (['features', 'app', 'screenshots', 'docs', 'download']);
 
@@ -56,9 +57,9 @@ const DOCS = [
 
 const T = {
   fr: { skip: 'Aller au contenu', nav: 'Navigation principale', docs: 'Documentation', other: 'English', otherLang: 'en',
-    footer: 'Rengaine, logiciel libre sous licence MIT', legal: 'Mentions légales', menu: 'Sommaire de la documentation' },
+    footer: 'Rengaine, logiciel libre sous licence MIT', legal: 'Mentions légales', licenses: 'Licences open source', menu: 'Sommaire de la documentation' },
   en: { skip: 'Skip to content', nav: 'Main navigation', docs: 'Documentation', other: 'Français', otherLang: 'fr',
-    footer: 'Rengaine, free software under the MIT license', legal: 'Legal notice', menu: 'Documentation contents' },
+    footer: 'Rengaine, free software under the MIT license', legal: 'Legal notice', licenses: 'Open source licenses', menu: 'Documentation contents' },
 };
 
 const LOGO = `<svg class="logo" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="var(--accent)"/><path d="M24.08 13.06A8.6 8.6 0 1 1 14.51 7.53" fill="none" stroke="var(--on-accent)" stroke-width="2.6" stroke-linecap="round"/><path d="M19.04 6.73L13.88 3.99l1.25 7.09z" fill="var(--on-accent)"/><circle cx="16" cy="16" r="2.4" fill="var(--on-accent)"/></svg>`;
@@ -123,7 +124,7 @@ function render({ lang, key, title, body, description }) {
 ${body}
 </main>
 <footer>
-  <p>${t.footer}${REPO ? ` · <a href="${REPO}">GitHub</a>` : ''} · <a href="${to('legal')}">${t.legal}</a></p>
+  <p>${t.footer}${REPO ? ` · <a href="${REPO}">GitHub</a>` : ''} · <a href="${to('licenses')}">${t.licenses}</a> · <a href="${to('legal')}">${t.legal}</a></p>
 </footer>
 </body>
 </html>
@@ -154,6 +155,75 @@ function rewriteLinks(/** @type {string} */ html, /** @type {Lang} */ lang) {
 const LEGAL = existsSync(join(here, 'legal.local.json')) ? JSON.parse(readFileSync(join(here, 'legal.local.json'), 'utf8')) : {};
 const MISSING = { fr: '[À COMPLÉTER]', en: '[TO BE COMPLETED]' };
 
+// Licences open source : serveur et lecteur web (website/licenses/server.json, versions lues dans
+// web/package-lock.json), appli Android (website/licenses/android.json : le aboutlibraries.json de l'appli,
+// recopié à chaque version). Chaque licence est affichée une fois en bas de page ; les lignes y renvoient.
+const LICENSE_NAMES = /** @type {Record<string, string>} */ ({
+  'Apache-2.0': 'Apache License 2.0', 'MIT': 'MIT License', 'OFL-1.1': 'SIL Open Font License 1.1', 'BSD-3-Clause': 'BSD 3-Clause License',
+});
+const licenseSlug = (/** @type {string} */ id) => 'licence-' + id.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+function licensesHtml(/** @type {Lang} */ lang) {
+  const fr = lang === 'fr';
+  const dir = join(here, 'licenses');
+  const server = JSON.parse(readFileSync(join(dir, 'server.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(root, 'web', 'package-lock.json'), 'utf8'));
+  /** @type {Map<string, { name: string, text: string, count: number }>} */
+  const texts = new Map();
+  const use = (/** @type {string} */ id, /** @type {string | undefined} */ name, /** @type {string | undefined} */ content) => {
+    const t = texts.get(id) ?? { name: name ?? LICENSE_NAMES[id] ?? id, text: '', count: 0 };
+    if (!t.text) {
+      const file = join(dir, `${id}.txt`);
+      t.text = existsSync(file) ? readFileSync(file, 'utf8') : (content ?? '');
+    }
+    if (!t.text) throw new Error(`Licence ${id} : texte introuvable (website/licenses/${id}.txt)`);
+    t.count++;
+    texts.set(id, t);
+    return `<a href="#${licenseSlug(id)}">${esc(t.name)}</a>`;
+  };
+  /** @param {{ name: string, version?: string, website?: string, by?: string, license: string, note?: string }} l */
+  const row = (l) => `<li><span class="lib-name">${l.website ? `<a href="${esc(l.website)}">${esc(l.name)}</a>` : esc(l.name)}`
+    + `${l.version ? ` <span class="lib-version">${esc(l.version)}</span>` : ''}${l.note ? ` <small>(${esc(l.note)})</small>` : ''}</span>`
+    + `<span class="lib-meta">${l.by ? `${esc(l.by)} · ` : ''}${l.license}</span></li>`;
+
+  const serverRows = server.components.map((/** @type {any} */ c) => row({
+    name: c.name, version: c.package ? lock.packages[`node_modules/${c.package}`]?.version : undefined, website: c.website,
+    by: c.author, license: use(c.license), note: c.note?.[lang],
+  }));
+  const programs = server.programs.map((/** @type {any} */ p) => `<li><span class="lib-name">${p.website ? `<a href="${esc(p.website)}">${esc(p.name)}</a>` : esc(fr ? p.name : p.nameEn ?? p.name)}`
+    + ` <small>(${esc(p.use[lang])})</small></span><span class="lib-meta">${esc(p.license)}</span></li>`).join('');
+
+  let android = '';
+  const appFile = join(dir, 'android.json');
+  if (existsSync(appFile)) {
+    const app = JSON.parse(readFileSync(appFile, 'utf8'));
+    const vFile = join(dir, 'android-version.txt');
+    const appVersion = existsSync(vFile) ? readFileSync(vFile, 'utf8').trim() : '';
+    const libs = [...app.libraries].sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
+    const rows = libs.map((/** @type {any} */ l) => {
+      const by = [...new Set((l.developers ?? []).map((/** @type {any} */ d) => d.name).filter(Boolean))].join(', ') || l.organization?.name || '';
+      const lic = (l.licenses ?? []).map((/** @type {string} */ k) => {
+        const def = app.licenses?.[k] ?? {};
+        const id = Object.keys(LICENSE_NAMES).find((i) => LICENSE_NAMES[i] === def.name || i === k) ?? k;
+        return use(id, def.name, def.content);
+      }).join(', ');
+      return row({ name: l.name, version: l.artifactVersion, website: l.website, by, license: lic });
+    });
+    android = `<h2>${fr ? 'Appli Android' : 'Android app'}</h2>
+<p>${fr ? `${libs.length} bibliothèques${appVersion ? `, version ${esc(appVersion)} de l’appli` : ''}.` : `${libs.length} libraries${appVersion ? `, app version ${esc(appVersion)}` : ''}.`}</p>
+<ul class="libs">${rows.join('')}</ul>`;
+  }
+
+  const licenseTexts = [...texts.entries()].map(([id, t]) => `<h3 id="${licenseSlug(id)}">${esc(t.name)}</h3>\n<pre>${esc(t.text.trim())}</pre>`).join('\n');
+  return `<h2>${fr ? 'Serveur et lecteur web' : 'Server and web player'}</h2>
+<ul class="libs">${serverRows.join('')}</ul>
+<p>${fr ? 'Programmes séparés, appelés par Rengaine mais non inclus ; ils gardent leur propre licence :' : 'Separate programs, called by Rengaine but not included; they keep their own licenses:'}</p>
+<ul class="libs">${programs}</ul>
+${android}
+<h2>${fr ? 'Textes des licences' : 'License texts'}</h2>
+${licenseTexts}`;
+}
+
 /** Fragment HTML d'une page, avec ses repères remplacés. */
 function fragment(/** @type {Lang} */ lang, /** @type {string} */ key) {
   const self = pathOf(lang, key);
@@ -176,7 +246,8 @@ function fragment(/** @type {Lang} */ lang, /** @type {string} */ key) {
         + `<img src="${src('dark')}" width="${w}" height="${h}" loading="lazy" alt="${esc(alt)}"></picture></a></figure>`;
     })
     .replace(/\{\{repo\}\}([\s\S]*?)\{\{\/repo\}\}/g, (_, inner) => REPO ? inner.replaceAll('{{REPO}}', REPO) : '')
-    .replace(/\{\{norepo\}\}([\s\S]*?)\{\{\/norepo\}\}/g, (_, inner) => REPO ? '' : inner);
+    .replace(/\{\{norepo\}\}([\s\S]*?)\{\{\/norepo\}\}/g, (_, inner) => REPO ? '' : inner)
+    .replace('{{LICENSES}}', () => licensesHtml(lang));
 }
 
 function write(/** @type {string} */ path, /** @type {string} */ html) {

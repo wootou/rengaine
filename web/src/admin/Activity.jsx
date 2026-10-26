@@ -237,16 +237,28 @@ function JobErrors() {
   const [open, setOpen] = useState(true);
   const page = useOffsetPage('/admin/job-errors', { open }, 30);
   const items = /** @type {Schemas['JobError'][]} */ (page.items);
+  const action = useAction();
+  /** @param {{ ids: number[] } | { all: true }} body */
+  const resolve = async (body) => {
+    if (await action.run(() => request('POST', '/admin/job-errors/resolve', { body }))) page.reload();
+  };
   return (
     <>
       <div className="page-head">
         <h3>{tr('Erreurs de lecture des fichiers')} {page.total !== null ? <small>{page.total}</small> : null}</h3>
         <label className="check"><input type="checkbox" checked={!open} onChange={(e) => setOpen(!e.target.checked)} /> {tr('Montrer aussi les erreurs résolues')}</label>
+        {open && page.total ? (
+          <button type="button" disabled={action.busy} onClick={() => {
+            if (window.confirm(tr('Marquer les {n} erreurs en cours comme résolues ?', { n: page.total ?? 0 }))) resolve({ all: true });
+          }}>{tr('Tout marquer comme résolu')}</button>
+        ) : null}
       </div>
+      <p className="hint">{tr('Une erreur se clôt d’elle-même quand le fichier est relu sans erreur, analysé, rangé ou supprimé.')}</p>
+      <Feedback message={action.message} error={action.error} />
       {items.length ? (
         <div className="table-wrap">
           <table className="admin-table">
-            <thead><tr><th>{tr('Fichier')}</th><th>{tr('Erreur')}</th><th>{tr('Tâche')}</th><th>{tr('Date')}</th></tr></thead>
+            <thead><tr><th>{tr('Fichier')}</th><th>{tr('Erreur')}</th><th>{tr('Tâche')}</th><th>{tr('Date')}</th><th /></tr></thead>
             <tbody>
               {items.map((e) => (
                 <tr key={e.id} className={e.resolvedAt ? 'resolved' : ''}>
@@ -254,6 +266,11 @@ function JobErrors() {
                   <td><code>{e.code}</code><small className="block">{e.message}</small></td>
                   <td>{e.jobId}</td>
                   <td>{formatDate(e.createdAt)}{e.resolvedAt ? <small className="block">{tr('résolue le {date}', { date: formatDate(e.resolvedAt) })}</small> : null}</td>
+                  <td className="row-actions">
+                    {e.resolvedAt ? null : (
+                      <button type="button" className="link-btn" disabled={action.busy} onClick={() => resolve({ ids: [e.id] })}>{tr('Marquer comme résolue')}</button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -266,7 +283,7 @@ function JobErrors() {
 }
 
 const actionGroups = () => [['', tr('Toutes')], ['user.', tr('Comptes')], ['auth.', tr('Connexions')], ['token.', tr('Appareils')], ['album.', tr('Albums')], ['track.', tr('Pistes')],
-  ['artist.', tr('Artistes')], ['correction.', tr('Corrections')], ['change_set.', tr('Lots')], ['genre', tr('Genres')], ['job.', tr('Tâches')], ['server.', tr('Serveur')]];
+  ['artist.', tr('Artistes')], ['correction.', tr('Corrections')], ['change_set.', tr('Lots')], ['genre', tr('Genres')], ['job', tr('Tâches')], ['server.', tr('Serveur')]];
 
 /** Cible d'un événement, avec un lien quand il y a une page. @param {{ e: Schemas['AuditEntry'] }} props */
 function Target({ e }) {
