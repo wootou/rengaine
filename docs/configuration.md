@@ -40,9 +40,15 @@ is enough if you never use `inbox/` nor set files aside from the admin.
 `[analyse] processus` is the number of tracks analysed at the same time (default: the number of CPU
 cores). Start with 2 or 3, and raise it while watching memory and disk:
 
-- **Memory**: count about 1 GB per worker. Essentia loads the whole track; tracks longer than 20 minutes
-  (mixes, DJ sets) are therefore analysed on excerpts (10 minutes in the middle, the first and last
-  minute).
+- **Memory**: count about 1 GB per worker. Essentia loads the whole track, so it never gets more than
+  20 minutes: longer tracks (mixes, DJ sets) are analysed on excerpts (10 minutes in the middle, the
+  first and last minute). The duration announced by the file is not trusted (a variable bitrate MP3
+  without a Xing header can announce 12 minutes for 75). An analysis peaks below 1 GB, whatever the
+  length of the track. While less than 1.2 GB is left, no further analysis starts in parallel (one alone
+  always runs).
+- **Memory cap**: to protect the site, cap the analyses with `MemoryMax` in `rengaine-analyze.service`
+  (`systemctl edit rengaine-analyze.service`, then for example `MemoryMax=4G` and `MemorySwapMax=0`
+  under `[Service]`). The limit is taken into account by the check above.
 - **Local disk, with S3 storage**: each track being analysed is first downloaded whole into
   `[cache] dossier` (`tmp/` subfolder), then deleted. Keep free at least the number of workers times your
   largest file (a one-hour hi-res FLAC exceeds 1 GB). A full disk also blocks PHP-FPM, and the site

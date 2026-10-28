@@ -13,6 +13,10 @@ SuccessExitStatus=3
 # Manque de mémoire : le noyau tue le plus gros processus (une analyse Essentia). Le passage continue,
 # seule cette piste est notée en erreur ; sans cette ligne, systemd arrêterait tout le service.
 OOMPolicy=continue
+# Plafond de mémoire de toutes les analyses réunies (à adapter : environ 1 Go par processus, plus une marge).
+# L'analyseur ne lance pas d'analyse de plus en parallèle quand il reste moins de 1,2 Go sous ce plafond.
+#MemoryMax=4G
+#MemorySwapMax=0
 # Tâche longue (première analyse d'une grosse bibliothèque) : le site passe avant
 Nice=15
 CPUWeight=20

@@ -68,6 +68,7 @@ export default {
   "MP3 mis à la corbeille": "MP3s moved to the bin",
   "MP3 gardés": "MP3s kept",
   "octets libérés": "bytes freed",
+  "ralentie faute de mémoire": "slowed down for lack of memory",
   "Tâches": "Jobs",
   "Scan demandé : il démarre dans la minute.": "Scan requested: it starts within a minute.",
   "Dossier (vide = toute la bibliothèque)": "Folder (empty = whole library)",

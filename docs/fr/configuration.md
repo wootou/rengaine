@@ -41,9 +41,15 @@ lecture seule (liste et lecture) suffit si vous n'utilisez ni `inbox/` ni la mis
 `[analyse] processus` est le nombre de pistes analysées en même temps (par défaut : le nombre de cœurs).
 Commencez à 2 ou 3, puis montez en surveillant la mémoire et le disque :
 
-- **Mémoire** : comptez environ 1 Go par processus. Essentia charge tout le morceau ; les pistes de plus
-  de 20 minutes (mixes, sets) sont donc analysées sur des extraits (10 minutes au milieu, la première
-  et la dernière minute).
+- **Mémoire** : comptez environ 1 Go par processus. Essentia charge tout le morceau, on ne lui en donne
+  donc jamais plus de 20 minutes : les pistes plus longues (mixes, sets) sont analysées sur des extraits
+  (10 minutes au milieu, la première et la dernière minute). La durée annoncée par le fichier n'est pas
+  prise pour argent comptant (un MP3 à débit variable sans en-tête Xing peut annoncer 12 minutes pour
+  75). Une analyse reste sous 1 Go, quelle que soit la durée de la piste. Tant qu'il reste moins de
+  1,2 Go, aucune analyse de plus ne démarre en parallèle (une seule passe toujours).
+- **Plafond de mémoire** : pour protéger le site, plafonnez les analyses avec `MemoryMax` dans
+  `rengaine-analyze.service` (`systemctl edit rengaine-analyze.service`, puis par exemple `MemoryMax=4G`
+  et `MemorySwapMax=0` sous `[Service]`). Le contrôle ci-dessus tient compte de cette limite.
 - **Disque local, avec un stockage S3** : chaque piste en cours d'analyse est d'abord téléchargée en
   entier dans `[cache] dossier` (sous-dossier `tmp/`), puis effacée. Gardez libre au moins le nombre de
   processus multiplié par votre plus gros fichier (un FLAC haute résolution d'une heure dépasse 1 Go).

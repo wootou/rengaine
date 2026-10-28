@@ -40,6 +40,11 @@ final class Analyzer
     /** Au-delà, une piste reste dans la file en échec (voir `rengaine analyze --retry`). */
     public const MAX_ATTEMPTS = 3;
     private const LOCK_MINUTES = 30;
+    /**
+     * Mémoire libre en dessous de laquelle on ne lance pas une analyse de plus en parallèle : Essentia prend
+     * jusqu'à 0,9 Go par piste (20 min chargées au plus, voir rythme_tonalite.py). Une analyse seule part toujours.
+     */
+    public const MIN_FREE_BYTES = 1_200_000_000;
     /** Début de last_error d'une piste dont l'analyse a été interrompue (passage tué ou en échec). */
     private const INTERRUPTED = 'interrompu';
     public const PRIORITY_QUEUED = 5;
@@ -63,6 +68,8 @@ final class Analyzer
         private readonly int $timeoutSeconds = 900,
         private readonly ?Rhythm $rhythm = null,
         private readonly ?Fingerprint $fingerprint = null,
+        /** @var (\Closure(): ?int)|null mémoire disponible (tests) ; par défaut Worker::availableMemory() */
+        private readonly ?\Closure $memory = null,
     ) {
         $this->worker = Worker::id();
         $this->mask = self::STEPS_DONE | ($rhythm !== null ? self::STEPS_RHYTHM : 0) | ($fingerprint !== null ? self::STEP_FINGERPRINT : 0);
@@ -140,6 +147,7 @@ final class Analyzer
             // encore tomber le passage, les autres pistes ne perdent pas une tentative avec elle.
             $solo = false;
             $onlySuspects = false;
+            $lowMemory = false;
             while (true) {
                 if ($running === []) {
                     $solo = false;
@@ -147,6 +155,13 @@ final class Analyzer
                 while (!$empty && !$solo && count($running) < $this->parallel && ($limit === null || $claimed < $limit)) {
                     if ($onlySuspects && $running !== []) {
                         break;
+                    }
+                    if ($running !== [] && !$this->memoryLeft()) {
+                        if (!$lowMemory) {
+                            $lowMemory = true; // noté une fois par passage dans les statistiques de la tâche
+                            $job->count('low_memory');
+                        }
+                        break; // on attend qu'une analyse en cours se termine
                     }
                     $task = $this->claim($job, $running === [], $onlySuspects);
                     if ($task === null) {
@@ -195,6 +210,13 @@ final class Analyzer
             $job->fail($e);
             throw $e;
         }
+    }
+
+    /** Assez de mémoire pour une analyse de plus ? Oui quand on ne sait pas la mesurer. */
+    private function memoryLeft(): bool
+    {
+        $free = $this->memory !== null ? ($this->memory)() : Worker::availableMemory();
+        return $free === null || $free >= self::MIN_FREE_BYTES;
     }
 
     // ------------------------------------------------------------------ file

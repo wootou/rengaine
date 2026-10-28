@@ -3,6 +3,19 @@
 All notable changes are listed here. The API contract has its own version (`info.version` in
 `api/openapi.yaml`, reported by `GET /api/v2/server`).
 
+## 1.0.2 (2026-10-28)
+
+Upgrading from 1.0.1: no database migration. Rebuild the web player. Long tracks that failed with 1.0.1
+can be put back in the queue with `rengaine analyze --retry`. Capping the analyses with `MemoryMax` is
+recommended (see the configuration guide, "Audio analysis").
+
+- Audio analysis: long tracks whose file announces a wrong duration (variable bitrate MP3 without a Xing
+  header) were loaded whole, up to 8.5 GB for a 3-hour mix. At most 20 minutes are now loaded, and the
+  duration of a long track is measured by decoding it in blocks: an analysis stays below 1 GB.
+- Audio analysis: excerpts of long tracks were read 6 dB too loud, which raised their energy a little.
+- No further analysis starts in parallel while less than 1.2 GB of memory is left (machine, or the
+  `MemoryMax` of the service). Documented: capping the analyses with `MemoryMax`.
+
 ## 1.0.1 (2026-10-26)
 
 Fixes from the first large installations.

@@ -32,4 +32,31 @@ final class Worker
         }
         return !is_dir("/proc/$pid");
     }
+
+    /**
+     * Mémoire encore utilisable par ce processus, en octets : MemAvailable de la machine, réduite par la
+     * limite de son groupe systemd (MemoryMax d'un service ou d'une tranche parente) s'il y en a une.
+     * null si on ne sait pas la lire (autre système que Linux).
+     */
+    public static function availableMemory(string $proc = '/proc', string $cgroupRoot = '/sys/fs/cgroup'): ?int
+    {
+        $meminfo = @file_get_contents("$proc/meminfo");
+        $free = $meminfo !== false && preg_match('/^MemAvailable:\s+(\d+) kB/m', $meminfo, $m) ? (int) $m[1] * 1024 : null;
+        // cgroup v2 : « 0::/system.slice/rengaine-analyze.service »
+        $line = @file_get_contents("$proc/self/cgroup");
+        if ($line !== false && preg_match('/^0::(\/\S*)/m', $line, $m)) {
+            for ($dir = rtrim($m[1], '/'); ; $dir = dirname($dir)) {
+                $max = @file_get_contents("$cgroupRoot$dir/memory.max");
+                $current = @file_get_contents("$cgroupRoot$dir/memory.current");
+                if ($max !== false && $current !== false && ctype_digit(trim($max))) {
+                    $left = max(0, (int) trim($max) - (int) trim($current));
+                    $free = $free === null ? $left : min($free, $left);
+                }
+                if ($dir === '' || $dir === '/') {
+                    break;
+                }
+            }
+        }
+        return $free;
+    }
 }

@@ -16,6 +16,9 @@ Dansabilité : algorithme Danceability d'Essentia (DFA), de 0,8 à 1,4 ramené e
 Pistes longues (plus de LONG_S, mixes et sets) : Essentia charge tout le morceau en mémoire (plus de 2 Go
 pour une heure) et refuse au-delà d'une certaine durée. On n'analyse alors que des extraits : BPM, tonalité,
 énergie et dansabilité sur BODY_S au milieu, grilles des temps sur EDGE_LOAD_S au début et à la fin.
+La durée annoncée par le fichier n'est pas fiable (un MP3 à débit variable sans en-tête Xing annonce 12 min
+pour 75) : on ne charge jamais plus de LONG_S, et la durée d'une piste longue est mesurée en décodant le
+fichier par blocs, en mémoire constante.
 Code de sortie 1 et message sur la sortie d'erreur si le fichier est illisible.
 """
 import json
@@ -92,8 +95,9 @@ EDGE_LOAD_S = 60
 
 
 def load(filename: str, start: float, end: float):
-    """Extrait [start, end] en mono 44,1 kHz, sans changer le volume (EasyLoader baisse de 6 dB par défaut)."""
-    return es.EasyLoader(filename=filename, sampleRate=44100, startTime=start, endTime=end, replayGain=0)()
+    """Extrait [start, end] en mono 44,1 kHz. Volume inchangé, comme MonoLoader : EasyLoader applique
+    replayGain + 6 dB, et sa valeur par défaut (-6) donne un gain de 1."""
+    return es.EasyLoader(filename=filename, sampleRate=44100, startTime=start, endTime=end)()
 
 
 def edge_grid(filename: str, start: float, end: float, head: bool):
@@ -108,7 +112,20 @@ def edge_grid(filename: str, start: float, end: float, head: bool):
     return local_grid(t[t <= t[0] + GRID_EDGE_S] if head else t[t >= t[-1] - GRID_EDGE_S], float(bpm))
 
 
-def long_track(filename: str, duration: int) -> int:
+def decoded_length(filename: str) -> float:
+    """Durée réelle en secondes, en décodant tout le fichier par blocs (mémoire constante)."""
+    import essentia.streaming as ess
+    loader = ess.MonoLoader(filename=filename, sampleRate=44100)
+    cutter = ess.FrameCutter(frameSize=4410, hopSize=4410, startFromZero=True, lastFrameToEndOfFile=True, silentFrames="keep")
+    rms, pool = ess.RMS(), essentia.Pool()
+    loader.audio >> cutter.signal
+    cutter.frame >> rms.array
+    rms.rms >> (pool, "rms")
+    essentia.run(loader)
+    return len(pool["rms"]) * 0.1 if pool.containsKey("rms") else 0.0
+
+
+def long_track(filename: str, duration: float) -> int:
     middle = duration / 2
     audio = load(filename, middle - BODY_S / 2, middle + BODY_S / 2)
     bpm, _beats, confidence, _est, _intervals = es.RhythmExtractor2013(method="multifeature")(audio)
@@ -139,10 +156,11 @@ def main() -> int:
         print("usage : rythme_tonalite.py <fichier>", file=sys.stderr)
         return 2
     try:
-        duration = int(es.MetadataReader(filename=sys.argv[1])()[-4])
-        if duration > LONG_S:
-            return long_track(sys.argv[1], duration)
-        audio = es.MonoLoader(filename=sys.argv[1], sampleRate=44100)()
+        # Au plus LONG_S secondes : si l'extrait est complet, le morceau continue au-delà
+        audio = load(sys.argv[1], 0, LONG_S)
+        if len(audio) >= (LONG_S - 1) * 44100:
+            del audio
+            return long_track(sys.argv[1], decoded_length(sys.argv[1]))
     except Exception as e:  # fichier illisible
         print(f"lecture impossible : {e}", file=sys.stderr)
         return 1

@@ -6,7 +6,7 @@
 
 🌐 **Site du projet et documentation : [rengaine.org](https://rengaine.org)**
 
-**Statut :** version 1.0.1 (voir [CHANGELOG.md](CHANGELOG.md)). **Appli Android :** code et APK sur [rengaine-android](https://github.com/wootou/rengaine-android/releases), version de test 1.0.0-rc.1.
+**Statut :** version 1.0.2 (voir [CHANGELOG.md](CHANGELOG.md)). **Appli Android :** code et APK sur [rengaine-android](https://github.com/wootou/rengaine-android/releases), version de test 1.0.0-rc.1.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://rengaine.org/images/fr/albums-dark.webp">

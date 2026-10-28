@@ -83,7 +83,7 @@ La collation rend les recherches insensibles à la casse et aux accents.
 
 ```bash
 git clone https://github.com/wootou/rengaine.git /var/www/rengaine
-git -C /var/www/rengaine checkout v1.0.1   # une version publiée (la branche main continue d'avancer)
+git -C /var/www/rengaine checkout v1.0.2   # une version publiée (la branche main continue d'avancer)
 install -d -m 750 -o root -g www-data /etc/rengaine
 install -m 640 -o root -g www-data /var/www/rengaine/config/rengaine.ini.example /etc/rengaine/rengaine.ini
 editor /etc/rengaine/rengaine.ini          # voir configuration.md

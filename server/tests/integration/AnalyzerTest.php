@@ -150,6 +150,31 @@ final class AnalyzerTest extends TestCase
         $this->assertSame(0, $this->analyze()['analyzed'] ?? 0);
     }
 
+    public function testPeuDeMemoireUneAnalyseALaFois(): void
+    {
+        $tags = ['album' => 'Mémoire', 'artist' => 'Test', 'album_artist' => 'Test'];
+        foreach ([1, 2, 3] as $n) {
+            $this->audio("Test - Mémoire/0$n - Piste $n.flac", $tags + ['title' => "Piste $n", 'track' => (string) $n]);
+        }
+        $this->index();
+        $calls = 0;
+        $analyzer = new Analyzer($this->db, $this->storage, $this->logger, "$this->base/cache/tmp", 3, 900, null, null,
+            function () use (&$calls): int {
+                $calls++;
+                return 100_000_000; // 100 Mo : sous le seuil
+            });
+        $stats = $analyzer->run();
+        // Les pistes passent quand même, une par une
+        $this->assertSame(3, $stats['analyzed'] ?? 0, 'pistes analysées');
+        $this->assertSame(1, $stats['low_memory'] ?? 0, 'manque de mémoire noté une fois');
+        $this->assertTrue($calls > 0, 'mémoire consultée');
+        // Assez de mémoire : rien de noté
+        $this->db->run('UPDATE analysis_queue SET steps = 1, attempts = 0');
+        $stats = (new Analyzer($this->db, $this->storage, $this->logger, "$this->base/cache/tmp", 3, 900, null, null,
+            static fn (): int => 8_000_000_000))->run();
+        $this->assertFalse(isset($stats['low_memory']), 'pas de manque de mémoire');
+    }
+
     public function testMeilleurFichierMesureEtLesDeuxHaches(): void
     {
         $tags = ['album' => 'Double', 'artist' => 'Test', 'album_artist' => 'Test', 'title' => 'Un', 'track' => '1'];
@@ -270,19 +295,25 @@ final class AnalyzerTest extends TestCase
             $this->skip('Essentia absent (/opt/rengaine-analyse)');
         }
         // 21 min 10 s (au-delà de 20 min) : un battement toutes les 0,5 s sur une note tenue
-        $path = "$this->root/Test - Set/01 - Set.flac";
-        mkdir(dirname($path), 0755, true);
+        // Aussi en MP3 à débit variable sans en-tête Xing : le fichier annonce une durée fausse (ici 3 min 30),
+        // il ne faut pas s'y fier et charger tout le morceau (8 Go pour un mix de 3 h en production)
         $expr = '0.3*sin(2*PI*220*t)+0.8*exp(-30*mod(t\\,0.5))*sin(2*PI*60*t)';
-        exec('ffmpeg -v error -y -f lavfi -i ' . escapeshellarg("aevalsrc='$expr':s=22050:d=1270") . ' -metadata album=Set -metadata artist=Test -metadata title=Set -c:a flac ' . escapeshellarg($path), $out, $code);
-        $this->assertSame(0, $code, 'ffmpeg');
+        foreach (['Set' => '-c:a flac', 'Mix' => '-ac 2 -ar 44100 -c:a libmp3lame -q:a 9 -write_xing 0'] as $title => $codec) {
+            $path = "$this->root/Test - $title/01 - $title." . ($title === 'Set' ? 'flac' : 'mp3');
+            mkdir(dirname($path), 0755, true);
+            exec('ffmpeg -v error -y -f lavfi -i ' . escapeshellarg("aevalsrc='$expr':s=22050:d=1270") . " -metadata album=$title -metadata artist=Test -metadata title=$title $codec " . escapeshellarg($path), $out, $code);
+            $this->assertSame(0, $code, 'ffmpeg');
+        }
         $this->index();
         $stats = (new Analyzer($this->db, $this->storage, $this->logger, "$this->base/cache/tmp", 1, 900, $rhythm))->run();
-        $this->assertSame([1, 0], [$stats['analyzed'] ?? 0, $stats['errors'] ?? 0]);
-        $a = $this->analysis('Set');
-        $this->assertTrue(abs((float) $a['bpm'] - 120) < 1, "BPM : {$a['bpm']}");
-        $grid = json_decode((string) $a['beat_grid'], true);
-        foreach (['intro', 'outro'] as $end) {
-            $this->assertTrue(is_array($grid[$end] ?? null) && abs($grid[$end]['bpm'] - 120) < 0.5, "grille $end : " . json_encode($grid));
+        $this->assertSame([2, 0], [$stats['analyzed'] ?? 0, $stats['errors'] ?? 0]);
+        foreach (['Set', 'Mix'] as $title) {
+            $a = $this->analysis($title);
+            $this->assertTrue(abs((float) $a['bpm'] - 120) < 1, "$title, BPM : {$a['bpm']}");
+            $grid = json_decode((string) $a['beat_grid'], true);
+            foreach (['intro', 'outro'] as $end) {
+                $this->assertTrue(is_array($grid[$end] ?? null) && abs($grid[$end]['bpm'] - 120) < 0.5, "$title, grille $end : " . json_encode($grid));
+            }
         }
     }
 

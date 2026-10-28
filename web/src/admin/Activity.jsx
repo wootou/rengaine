@@ -97,7 +97,7 @@ const STAT = /** @type {Record<string, string>} */ (labels(() => ({
   errors: tr('erreurs'), tracks_new: tr('pistes ajoutées'), albums_new: tr('albums ajoutés'), albums_rebuilt: tr('albums recalculés'), albums_missing: tr('albums disparus'),
   folders: tr('dossiers'), filed: tr('rangés'), waiting: tr('en attente'), incomplete: tr('incomplets'), blocked: tr('bloqués'), files_moved: tr('fichiers déplacés'),
   analyzed: tr('analysées'), hashed: tr('hachés'), silent: tr('silencieuses'), failed: tr('échecs'), skipped: tr('ignorés'), requeued: tr('remises en file'), created: tr('créés'),
-  mp3_moved: tr('MP3 mis à la corbeille'), mp3_kept: tr('MP3 gardés'), bytes_freed: tr('octets libérés'),
+  mp3_moved: tr('MP3 mis à la corbeille'), mp3_kept: tr('MP3 gardés'), bytes_freed: tr('octets libérés'), low_memory: tr('ralentie faute de mémoire'),
 })));
 
 /** @param {{ stats: Record<string, number> | null | undefined }} props */
