@@ -15,12 +15,22 @@
 </head>
 <body>
 <h1>Essai du son (sans l'interface du lecteur)</h1>
-<p>Lecture d'une piste par un simple élément audio, sans Web Audio, sans React, sans forme d'onde. Faire défiler la liste pendant l'écoute ; le journal note les attentes du flux et les retards.</p>
+<p>Lecture d'une piste par un simple élément audio, sans React, sans forme d'onde, sans réglage de volume. Faire défiler la liste pendant l'écoute ; le journal note les attentes du flux et les retards.</p>
+<p>Comparer le son : lancer la lecture, puis changer de <strong>Sortie</strong> pendant l'écoute (elle reprend au même endroit). « Web Audio, tampons lecture » est la sortie du lecteur ; « sans Web Audio » est celle du son simplifié.</p>
+<input id="track-id" inputmode="numeric" size="8" aria-label="Numéro de piste" placeholder="n° de piste">
+<button id="track-load" type="button">Ajouter la piste</button><br>
 <select id="track" aria-label="Piste"></select>
 <select id="format" aria-label="Format">
   <option value="">Fichier d'origine (FLAC s'il existe)</option>
   <option value="format=mp3&amp;bitrate=320">Converti en MP3 320</option>
   <option value="format=opus&amp;bitrate=256">Converti en Opus 256</option>
+</select>
+<select id="output" aria-label="Sortie">
+  <option value="direct">Sortie : sans Web Audio (son simplifié)</option>
+  <option value="defaut">Sortie : Web Audio, réglage par défaut</option>
+  <option value="playback">Sortie : Web Audio, tampons lecture (lecteur)</option>
+  <option value="r44">Sortie : Web Audio à 44,1 kHz</option>
+  <option value="r48">Sortie : Web Audio à 48 kHz</option>
 </select>
 <button id="play" type="button">Lecture</button>
 <button id="stop" type="button">Arrêt</button>

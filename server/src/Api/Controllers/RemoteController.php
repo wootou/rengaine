@@ -94,6 +94,26 @@ final class RemoteController
     }
 
     /**
+     * Liens révoqués d'un coup (Shares::revokeAll) : chaque invité connecté voit le lien révoqué, le
+     * lecteur du compte relit sa liste. Ne lève jamais. @param list<int> $shareIds
+     */
+    public static function announceRevoked(Context $ctx, int $userId, array $shareIds): void
+    {
+        if ($shareIds === []) {
+            return;
+        }
+        try {
+            $hub = Hub::forServer($ctx->config, $ctx->db);
+            foreach ($shareIds as $id) {
+                $hub?->publish($ctx->publicUrl() . self::shareTopic($id), ['type' => 'revoked']);
+            }
+            $hub?->publish($ctx->publicUrl() . self::playerTopic($userId), ['type' => 'shares']);
+        } catch (\Throwable $e) {
+            $ctx->logger->warning('Télécommande : révocation non annoncée', ['message' => $e->getMessage()]);
+        }
+    }
+
+    /**
      * Télécommande désactivée par l'admin : chaque invité connecté voit le message, chaque lecteur
      * arrête de s'abonner. À appeler avant d'arrêter le service. Ne lève jamais.
      */

@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: API Rengaine
-  version: 2.28.0
+  version: 2.29.0
   summary: Bibliothèque musicale, lecture, comptes et administration.
   license:
     name: Usage privé
@@ -234,7 +234,8 @@ paths:
       summary: Nouveau mot de passe à partir du lien reçu par e-mail
       description: |
         Révoque toutes les sessions et tous les jetons du compte, lève les verrous après échecs,
-        et invalide les autres liens. Un e-mail confirme le changement.
+        et invalide les autres liens. Révoque aussi tous les liens de télécommande du compte (depuis
+        2.28.1) : l'invité connecté reçoit `revoked`. Un e-mail confirme le changement.
         `400 invalid_token` si le lien est inconnu, expiré ou déjà utilisé.
       security: []
       x-priority: P2
@@ -392,8 +393,10 @@ paths:
       operationId: changePassword
       summary: Changer son mot de passe
       description: |
-        Révoque les autres sessions et jetons, sauf celui qui fait la demande. Un e-mail prévient
-        le titulaire du compte (si le serveur envoie des mails).
+        Révoque les autres sessions et jetons, sauf celui qui fait la demande, et tous les liens de
+        télécommande du compte (depuis 2.28.1 : un lien créé par une session volée ne survit pas au
+        nouveau mot de passe ; l'invité connecté reçoit `revoked`). Un e-mail prévient le titulaire du
+        compte (si le serveur envoie des mails).
       x-priority: P1
       requestBody:
         required: true
@@ -907,6 +910,26 @@ paths:
           in: query
           description: "`true` = seulement les albums favoris"
           schema: {type: boolean}
+        - name: kind
+          in: query
+          description: "`album` ou `loose` (pistes en vrac) ; depuis 2.29.0"
+          schema: {type: string, enum: [album, loose]}
+        - name: compilation
+          in: query
+          description: "`true` = seulement les compilations, `false` = aucune ; depuis 2.29.0"
+          schema: {type: boolean}
+        - name: missing
+          in: query
+          description: |
+            Albums auxquels il manque l'une de ces informations (depuis 2.29.0) : `artist` (pas d'artiste de
+            l'album, hors compilations), `year`, `genre`. Plusieurs valeurs : il manque l'une ou l'autre.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {type: string, enum: [artist, year, genre]}
+          examples:
+            sansAnnee: {value: [year]}
         - name: sort
           in: query
           description: |
@@ -1898,7 +1921,8 @@ paths:
       summary: Approuver, refuser, suspendre, réactiver, changer le rôle
       description: |
         Approuver une demande = passer `status` de `pending` à `active` ; un e-mail prévient
-        l'utilisateur, de même qu'un refus. Suspendre révoque toutes ses sessions et tous ses jetons.
+        l'utilisateur, de même qu'un refus. Suspendre révoque toutes ses sessions et tous ses jetons,
+        et tous ses liens de télécommande (depuis 2.28.1 : une réactivation ne les rouvre pas).
         Un admin ne peut ni se suspendre ni retirer son propre rôle d'admin.
       x-priority: P1
       x-roles: [admin]
@@ -2133,14 +2157,24 @@ paths:
       tags: [admin-bibliotheque]
       operationId: adminGetAlbum
       summary: Album vu par l'admin (dossier source, fichiers, corrections actives)
+      description: |
+        Avec `compact=true` (depuis 2.29.0), une forme réduite pour un modèle d'IA : pistes réduites à leurs
+        numéros, titre, crédit et durée (`AdminAlbumCompact`), sans formats, analyse ni grille de tempo.
       x-priority: P2
       x-roles: [admin, agent]
+      parameters:
+        - name: compact
+          in: query
+          schema: {type: boolean, default: false}
       responses:
         "200":
           description: Album
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/AdminAlbumDetail"}
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AdminAlbumDetail"
+                  - $ref: "#/components/schemas/AdminAlbumCompact"
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -2357,6 +2391,29 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/artist-lookalikes:
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListArtistLookalikes
+      summary: Artistes écrits de plusieurs façons (candidats à la fusion)
+      description: |
+        Depuis 2.29.0. Paires d'artistes aux noms presque identiques, les plus sûres d'abord (`sameKey`,
+        puis par distance). Les artistes déjà fusionnés et ceux sans album ni piste sont exclus. Rien n'est
+        fusionné : c'est une liste à vérifier, puis à proposer (`mergedInto`).
+      x-priority: P3
+      x-roles: [admin, agent]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paires
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ArtistLookalikePage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
   /admin/artists/{id}/merge:
     parameters:
@@ -3233,6 +3290,10 @@ components:
       properties:
         name: {type: string, examples: [Rengaine]}
         apiVersion: {type: string, examples: [2.0.0]}
+        serverVersion:
+          type: string
+          description: Version de Rengaine elle-même (pas celle du contrat) ; depuis 2.29.0
+          examples: [1.0.3]
         registrationOpen: {type: boolean}
         language:
           $ref: "#/components/schemas/Language"
@@ -4656,6 +4717,12 @@ components:
           type: [string, "null"]
           description: Nom de l'artiste (créé s'il n'existe pas) ; null = artistes divers
         isCompilation: {type: boolean}
+        kind:
+          type: string
+          enum: [album, loose]
+          description: |
+            Depuis 2.29.0 : `album` traite le dossier comme un album (titre et artiste tirés des tags, même
+            minoritaires), `loose` comme des pistes en vrac (titre = nom du dossier). Survit aux scans.
         genreIds:
           type: array
           description: Remplace la liste des genres de l'album
@@ -4720,6 +4787,77 @@ components:
               type: array
               items: {$ref: "#/components/schemas/Correction"}
 
+    AdminAlbumCompact:
+      description: Album vu par l'admin, forme réduite (`compact=true`)
+      allOf:
+        - $ref: "#/components/schemas/AlbumSummary"
+        - type: object
+          required: [isCompilation, sourceDir, tracks, files, activeCorrections]
+          properties:
+            isCompilation: {type: boolean}
+            sourceDir: {type: string}
+            tracks:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, discNumber, trackNumber, title, artistCredit, durationMs]
+                properties:
+                  id: {type: integer}
+                  discNumber: {type: integer}
+                  trackNumber: {type: [integer, "null"]}
+                  title: {type: string}
+                  artistCredit: {type: string}
+                  durationMs: {type: integer}
+            files:
+              type: array
+              items:
+                type: object
+                required: [trackId, storageKey, tags]
+                properties:
+                  trackId: {type: integer}
+                  storageKey: {type: string}
+                  tags: {type: object, additionalProperties: true}
+            activeCorrections:
+              type: array
+              items: {$ref: "#/components/schemas/Correction"}
+
+    ArtistLookalike:
+      type: object
+      required: [id, name, albumCount, trackCount]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        albumCount: {type: integer, description: Albums dont il est l'artiste}
+        trackCount: {type: integer, description: Pistes où il est crédité}
+
+    ArtistLookalikePage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                required: [artists, reason, distance]
+                properties:
+                  artists:
+                    type: array
+                    minItems: 2
+                    maxItems: 2
+                    description: Le plus présent d'abord (candidat naturel de `mergedInto`)
+                    items: {$ref: "#/components/schemas/ArtistLookalike"}
+                  reason:
+                    type: string
+                    enum: [sameKey, close]
+                    description: |
+                      `sameKey` : même nom une fois la casse, les accents, la ponctuation et les espaces retirés
+                      (« Ska P » et « Ska-P ») ; `close` : noms qui ne diffèrent que d'une ou deux lettres
+                      (« Frances Cabrel » et « Francis Cabrel »).
+                  distance: {type: integer, description: Lettres à changer (0 pour sameKey)}
+
     CorrectionStatus:
       type: string
       enum: [proposed, active, rejected, reverted]
@@ -4776,8 +4914,10 @@ components:
           type: string
           description: |
             Mêmes champs que `AlbumPatch` (sauf `collectionIds`), `TrackPatch` et `ArtistPatch`
-            (ex. `genreIds`, `year`, `albumArtist`, `title`, `albumId`). En plus, pour un artiste,
-            `mergedInto` (identifiant d'un autre artiste) le fusionne dans celui-ci. Pour rattacher
+            (ex. `genreIds`, `year`, `albumArtist`, `title`, `albumId`, `kind`). En plus, pour un artiste,
+            `mergedInto` (identifiant d'un autre artiste) le fusionne dans celui-ci. Pour un album,
+            `mergedInto` (identifiant d'un autre album, depuis 2.29.0) devient un changement `albumId` par
+            piste de l'album, comme `POST /admin/albums/{id}/merge` : le lot montre chaque piste. Pour rattacher
             une valeur de tag à un genre : `entityType: genreAlias`, `field: genreId`, `alias` à la
             place de `entityId`.
         value: {description: Nouvelle valeur}

@@ -8,7 +8,8 @@ recognises MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, WMA, APE and WavPack.
 **One folder is one album.** Disc sub-folders (`CD1/`, `Disc 2/`) and format sub-folders (`flac/`,
 `mp3/`) belong to their parent. Title, artist and year come from a majority vote over the tags of the
 album's tracks, and from the folder name (`Artist - Album`) when tags are missing. A folder whose tracks
-do not share an album becomes a "loose" folder: its tracks are still searchable and playable.
+do not share an album becomes a "loose" folder: its tracks are still searchable and playable. A correction
+can switch a folder from loose to album, or the other way round; the choice survives scans.
 
 When the same track exists as MP3 and FLAC in one album, it is a single track with two files: the
 lossless one is played, and **Admin > Duplicates** can move the redundant MP3s to a recycle folder.

@@ -86,6 +86,26 @@ final class CatalogController
         if ($r->queryBool('lossless') === true) {
             $where[] = 'a.has_lossless = 1';
         }
+        if (($kind = $r->queryEnum('kind', ['album', 'loose'])) !== null) {
+            $where[] = 'a.kind = ?';
+            $args[] = $kind;
+        }
+        if (($comp = $r->queryBool('compilation')) !== null) {
+            $where[] = 'a.is_compilation = ' . ($comp ? 1 : 0);
+        }
+        if (($missing = $r->queryString('missing')) !== null) {
+            // Il manque l'une de ces informations (« artist » : hors compilations, qui n'en ont pas)
+            $or = [];
+            foreach (array_unique(array_map('trim', explode(',', $missing))) as $m) {
+                $or[] = match ($m) {
+                    'artist' => '(a.album_artist_id IS NULL AND a.is_compilation = 0)',
+                    'year' => 'a.year IS NULL',
+                    'genre' => 'NOT EXISTS (SELECT 1 FROM album_genres ag2 WHERE ag2.album_id = a.id)',
+                    default => throw ApiError::invalid('missing', 'Paramètre « missing » : valeurs possibles artist, year, genre'),
+                };
+            }
+            $where[] = '(' . implode(' OR ', $or) . ')';
+        }
         if ($r->queryBool('favorite') === true) {
             [$sql, $a] = $this->favoriteFilter('album', 'a.id');
             $where[] = $sql;

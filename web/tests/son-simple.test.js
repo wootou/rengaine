@@ -31,3 +31,14 @@ describe('son simplifié', () => {
     expect(simpleAudio()).toBe(true);
   });
 });
+
+describe('vitesse de lecture', () => {
+  it('le retour à 1 se fait même depuis un écart minuscule ; les autres petits écarts sont ignorés', async () => {
+    const { Player } = await import('../src/engine/player.js');
+    const audio = /** @type {HTMLAudioElement} */ ({ playbackRate: 1.00005, preservesPitch: true });
+    Player.setRate(audio, 1.00009);
+    expect(audio.playbackRate).toBe(1.00005);
+    Player.setRate(audio, 1);
+    expect(audio.playbackRate).toBe(1);
+  });
+});

@@ -109,7 +109,8 @@ function render({ lang, key, title, body, description }) {
 <meta property="og:description" content="${esc(desc)}">
 <meta property="og:image" content="${SITE}/images/apercu.png">
 <link rel="icon" href="${rel(self, 'favicon.svg')}" type="image/svg+xml">
-<link rel="stylesheet" href="${rel(self, 'site.css')}">
+<link rel="stylesheet" href="${rel(self, 'site.css')}${version('site.css')}">
+<script src="${rel(self, 'viewer.js')}${version('viewer.js')}" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">${t.skip}</a>
@@ -259,6 +260,7 @@ function write(/** @type {string} */ path, /** @type {string} */ html) {
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'site.css'), join(out, 'site.css'));
+cpSync(join(here, 'viewer.js'), join(out, 'viewer.js'));
 writeFileSync(join(out, 'favicon.svg'), LOGO.replace('class="logo" ', 'xmlns="http://www.w3.org/2000/svg" ').replace(/var\(--accent\)/g, '#ff7a2e').replace(/var\(--on-accent\)/g, '#1a0d04'));
 if (existsSync(join(here, 'images'))) cpSync(join(here, 'images'), join(out, 'images'), { recursive: true });
 

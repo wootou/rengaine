@@ -124,6 +124,8 @@ export class Player extends EventTarget {
         d.audio.volume = 1;
         this.applyGain(d, d.gainDb);
       }
+      const ms = (/** @type {number | undefined} */ x) => (typeof x === 'number' ? `${Math.round(x * 1000)} ms` : '?');
+      note(`Web Audio : ${this.ctx.sampleRate} Hz, latence de base ${ms(this.ctx.baseLatency)}, de sortie ${ms(this.ctx.outputLatency)}`);
     } catch (e) {
       console.warn('Web Audio indisponible, volume simple', e);
       this.ctx = null;
@@ -272,7 +274,10 @@ export class Player extends EventTarget {
 
   /** @param {HTMLAudioElement} audio @param {number} rate */
   static setRate(audio, rate) {
-    if (Math.abs(audio.playbackRate - rate) < 0.0001) return; // plus fin que le pas de glideToNormal
+    if (audio.playbackRate === rate) return;
+    // Plus fin que le pas de glideToNormal : ignoré, sauf le retour à 1. Une vitesse restée à 1,00005 laisse
+    // l'étirement du temps du navigateur actif toute la piste, et il colore le son.
+    if (rate !== 1 && Math.abs(audio.playbackRate - rate) < 0.0001) return;
     audio.preservesPitch = true; // la hauteur ne change pas (vrai par défaut, mais on s'en assure)
     audio.playbackRate = rate;
     note(`vitesse ${rate.toFixed(4)}`);

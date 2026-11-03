@@ -3,6 +3,36 @@
 All notable changes are listed here. The API contract has its own version (`info.version` in
 `api/openapi.yaml`, reported by `GET /api/v2/server`).
 
+## 1.0.3 (2026-11-03)
+
+Upgrading from 1.0.2: no database migration. Rebuild the web player. Remote control links of an account
+are now revoked when its password changes or when it is suspended: guests need a new link afterwards.
+
+- Security: changing or resetting a password, or suspending the account, now also revokes every remote
+  control link of the account; a guest who is connected is told at once (API contract 2.28.1). A link
+  created from a stolen session no longer outlives the new password, and reactivating an account does not
+  bring its links back.
+- MCP and admin API (contract 2.29.0), after a first real tidy-up of a 1,135-album library by an AI:
+  - an album can be switched between `album` and `loose` (tracks in bulk), by `PATCH /admin/albums/{id}`
+    or in a proposal batch; the choice survives scans;
+  - a proposal can merge two albums (`album.mergedInto`): it becomes one `albumId` move per track, as
+    `POST /admin/albums/{id}/merge` already does;
+  - `GET /albums` filters: `kind`, `compilation`, `missing=artist,year,genre`;
+  - `GET /admin/albums/{id}?compact=true`: a short form for a model (tracks reduced to numbers, title,
+    credit and duration, raw tags kept);
+  - `GET /admin/artist-lookalikes` and the MCP tool `list_artist_lookalikes`: artists spelled several
+    ways ("Ska P" / "Ska-P", "Frances Cabrel" / "Francis Cabrel"), to check before proposing a merge;
+  - the server reports its own version (`serverVersion` in `GET /server`, `serverInfo.version` for MCP),
+    apart from the API contract version.
+- MCP: raw file tags (`get_album`) are always JSON objects; an empty or numbered tag set came out as a
+  list and could crash a client.
+- Web player: after a beat-matched crossfade, the playback rate could stay a hair away from 1 for the
+  whole track, leaving the browser's time-stretching on. It now always returns to exactly 1.
+- Website: screenshots open in a viewer over the page (close with ×, Escape or a click beside; arrows
+  move between screenshots) instead of the bare image. Android app links point to 1.0.0-rc.5.
+- Sound test page (`/essai-son.html`): compares the direct output with several Web Audio settings,
+  switchable while playing; a track can be picked by its number.
+
 ## 1.0.2 (2026-10-28)
 
 Upgrading from 1.0.1: no database migration. Rebuild the web player. Long tracks that failed with 1.0.1

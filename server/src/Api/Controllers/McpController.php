@@ -60,7 +60,7 @@ final class McpController
         return [
             'protocolVersion' => in_array($asked, self::PROTOCOLS, true) ? $asked : self::PROTOCOLS[0],
             'capabilities' => ['tools' => ['listChanged' => false]],
-            'serverInfo' => ['name' => 'rengaine', 'title' => 'Rengaine', 'version' => Kernel::VERSION],
+            'serverInfo' => ['name' => 'rengaine', 'title' => 'Rengaine', 'version' => Kernel::RELEASE],
             'instructions' => McpTools::INSTRUCTIONS,
         ];
     }

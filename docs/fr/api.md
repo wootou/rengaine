@@ -8,8 +8,9 @@ l'appli Android et des agents d'IA. Le contrat est rédigé en français.
 
 L'essentiel :
 
-- Chemin de base `/api/v2`. `GET /server` (sans authentification) donne la version, les fonctions
-  disponibles et la langue.
+- Chemin de base `/api/v2`. `GET /server` (sans authentification) donne la version de l'API
+  (`apiVersion`), celle de Rengaine elle-même (`serverVersion`, depuis 2.29.0), les fonctions disponibles et la
+  langue.
 - Authentification : un cookie de session plus `X-CSRF-Token` pour le lecteur web, `Authorization: Bearer`
   pour les applis et les agents. Les appareils s'appairent avec un code court ou un QR code.
 - Les erreurs ont toujours la même forme : `{"error": {"status", "code", "message", "requestId"}}` ; `code`

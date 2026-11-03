@@ -13,7 +13,8 @@ limité.
 Rôles : **utilisateur**, **admin**, et **agent** (une IA qui travaille sur la bibliothèque : elle lit le
 catalogue et propose des corrections, rien d'autre ; elle n'a pas de mot de passe, seulement des jetons
 créés par un admin). Suspendre, réactiver, changer de rôle, voir les appareils et les déconnecter : depuis
-la fiche du compte.
+la fiche du compte. Suspendre un compte déconnecte tous ses appareils et révoque ses liens de télécommande ; une
+réactivation ne les rend pas.
 
 ## Bibliothèque
 

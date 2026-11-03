@@ -17,6 +17,7 @@ use Musique\Http\Input;
 use Musique\Http\Response;
 use Musique\Mail\Notices;
 use Musique\Mail\Outbox;
+use Musique\Playback\Shares;
 
 final class AuthController
 {
@@ -41,6 +42,7 @@ final class AuthController
         $info = [
             'name' => (string) $settings->get('server_name'),
             'apiVersion' => Kernel::VERSION,
+            'serverVersion' => Kernel::RELEASE,
             'language' => (string) $settings->get('language'),
             'registrationOpen' => (bool) $settings->get('registration_open'),
             'features' => [
@@ -262,7 +264,7 @@ final class AuthController
         $in = new Input($ctx->request->json());
         $token = (string) $in->string('token', 1, 200);
         $new = (string) $in->string('newPassword', 10, 200);
-        $uid = $ctx->db->transaction(function () use ($ctx, $token, $new): ?int {
+        $done = $ctx->db->transaction(function () use ($ctx, $token, $new): ?array {
             $row = $ctx->db->one(
                 "SELECT r.id, r.user_id FROM password_resets r JOIN users u ON u.id = r.user_id
                   WHERE r.token_hash = ? AND r.used_at IS NULL AND r.expires_at > CURRENT_TIMESTAMP(3) AND u.status = 'active' AND u.password_hash IS NOT NULL
@@ -278,9 +280,14 @@ final class AuthController
             // Ce lien et tous les autres liens encore valables du compte ne servent plus
             $ctx->db->run('UPDATE password_resets SET used_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND used_at IS NULL', [$uid]);
             $revoked = $ctx->tokens()->revokeAll($uid, null, null);
-            $ctx->audit('user.password_reset', 'user', $uid, null, ['revokedTokens' => $revoked], $uid);
-            return $uid;
+            $shares = (new Shares($ctx->db))->revokeAll($uid);
+            $ctx->audit('user.password_reset', 'user', $uid, null, ['revokedTokens' => $revoked, 'revokedShares' => count($shares)], $uid);
+            return [$uid, $shares];
         });
+        [$uid, $shares] = $done ?? [null, []];
+        if ($uid !== null) {
+            RemoteController::announceRevoked($ctx, $uid, $shares);
+        }
         if ($uid === null) {
             $ctx->security->event('password_reset_invalid', $ip, ['rid' => $ctx->requestId]);
             throw new ApiError(400, 'invalid_token', 'Lien inconnu, expiré ou déjà utilisé : demandez-en un nouveau');

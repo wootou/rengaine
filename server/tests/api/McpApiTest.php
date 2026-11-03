@@ -45,7 +45,7 @@ final class McpApiTest extends ApiCase
         $this->assertContract($r, 'mcp', 200);
         $res = $r->data()['result'];
         $this->assertSame('2025-06-18', $res['protocolVersion']);
-        $this->assertSame(['name' => 'rengaine', 'title' => 'Rengaine', 'version' => \Musique\Api\Kernel::VERSION], $res['serverInfo']);
+        $this->assertSame(['name' => 'rengaine', 'title' => 'Rengaine', 'version' => \Musique\Api\Kernel::RELEASE], $res['serverInfo']);
         $this->assertSame(['tools' => ['listChanged' => false]], $res['capabilities']);
         $this->assertTrue(str_contains($res['instructions'], 'propose_changes'));
         // Version inconnue : le serveur propose la sienne
@@ -150,6 +150,29 @@ final class McpApiTest extends ApiCase
         $this->assertSame('Lemonade', $data->albums[0]->title ?? null);
         [$data] = $this->tool('list_albums', ['sort' => 'year', 'order' => 'desc', 'limit' => 1]);
         $this->assertSame('Lemonade', $data->items[0]->title);
+
+        // Filtres et forme réduite passés par le MCP (booléen et liste dans l'adresse)
+        [$data] = $this->tool('list_albums', ['missing' => ['artist', 'year'], 'isCompilation' => false, 'kind' => 'album']);
+        $this->assertSame([], Contract::validate($data, Contract::responseSchema('listAlbums', 200)));
+        [$data, $error] = $this->tool('get_album', ['id' => $album, 'compact' => true]);
+        $this->assertSame(false, $error);
+        $this->assertSame(false, isset($data->tracks[0]->formats), 'forme réduite');
+
+        // Tags bruts toujours en objet, même vides ou à clés numériques (une liste faisait planter un client)
+        $files = $this->db->all('SELECT tf.id, tf.tags_raw FROM track_files tf JOIN tracks t ON t.id = tf.track_id WHERE t.album_id = ? ORDER BY tf.id LIMIT 2', [$album]);
+        $this->assertSame(2, count($files));
+        try {
+            $this->db->run('UPDATE track_files SET tags_raw = ? WHERE id = ?', ['{}', $files[0]['id']]);
+            $this->db->run('UPDATE track_files SET tags_raw = ? WHERE id = ?', ['{"0":"x","1":"y"}', $files[1]['id']]);
+            [$data] = $this->tool('get_album', ['id' => $album]);
+            foreach ($data->files as $f) {
+                $this->assertTrue(is_object($f->tags), "files[].tags : " . json_encode($f->tags));
+            }
+        } finally {
+            foreach ($files as $f) {
+                $this->db->run('UPDATE track_files SET tags_raw = ? WHERE id = ?', [$f['tags_raw'], $f['id']]);
+            }
+        }
 
         // Erreurs de l'outil : rendues au modèle, pas en erreur de protocole
         [$text, $error] = $this->tool('get_album', ['id' => 999999]);

@@ -44,26 +44,39 @@ final class McpTools
             ],
             'list_albums' => [
                 'title' => 'Lister des albums',
-                'description' => 'Albums filtrés et triés. Utile pour parcourir un genre, un artiste, une décennie, ou les ajouts récents (sort=added, order=desc).',
+                'description' => 'Albums filtrés et triés. Utile pour parcourir un genre, un artiste, une décennie, les ajouts récents (sort=added, order=desc), ou trouver ce qui est à ranger (missing, kind=loose).',
                 'route' => ['GET', '/albums'],
                 'query' => ['q' => 'q', 'genreIds' => 'genre', 'artistId' => 'artist', 'collectionId' => 'collection', 'yearFrom' => 'yearFrom',
-                    'yearTo' => 'yearTo', 'lossless' => 'lossless', 'sort' => 'sort', 'order' => 'order'] + $page,
+                    'yearTo' => 'yearTo', 'lossless' => 'lossless', 'kind' => 'kind', 'isCompilation' => 'compilation', 'missing' => 'missing',
+                    'sort' => 'sort', 'order' => 'order'] + $page,
                 'props' => [
                     'q' => ['type' => 'string', 'maxLength' => 200, 'description' => 'Texte cherché dans le titre et l’artiste'],
                     'genreIds' => $ids + ['description' => 'Albums ayant l’un de ces genres (un genre parent comprend ses sous-genres)'],
                     'artistId' => $id, 'collectionId' => $id,
                     'yearFrom' => ['type' => 'integer'], 'yearTo' => ['type' => 'integer'],
                     'lossless' => ['type' => 'boolean', 'description' => 'true : seulement les albums disponibles sans perte'],
+                    'kind' => ['type' => 'string', 'enum' => ['album', 'loose'], 'description' => 'loose : dossiers de pistes en vrac'],
+                    'isCompilation' => ['type' => 'boolean'],
+                    'missing' => ['type' => 'array', 'items' => ['type' => 'string', 'enum' => ['artist', 'year', 'genre']], 'maxItems' => 3,
+                        'description' => 'Albums auxquels il manque l’une de ces informations (artist : hors compilations)'],
                     'sort' => ['type' => 'string', 'enum' => ['name', 'added', 'year', 'artist'], 'default' => 'name'],
                     'order' => $order, 'limit' => $limit(500, 50), 'offset' => $offset,
                 ],
             ],
             'get_album' => [
                 'title' => 'Lire un album',
-                'description' => 'Détail complet d’un album : pistes, genres, chemins et tags bruts des fichiers, corrections actives. À lire avant de proposer un changement sur cet album.',
+                'description' => 'Détail d’un album : pistes, genres, chemins et tags bruts des fichiers, corrections actives. À lire avant de proposer un changement sur cet album. compact=true (conseillé) réduit chaque piste à ses numéros, titre, crédit et durée.',
                 'route' => ['GET', '/admin/albums/{id}'],
-                'props' => ['id' => $id],
+                'query' => ['compact' => 'compact'],
+                'props' => ['id' => $id, 'compact' => ['type' => 'boolean', 'default' => false, 'description' => 'Forme réduite, sans formats ni analyse']],
                 'required' => ['id'],
+            ],
+            'list_artist_lookalikes' => [
+                'title' => 'Artistes écrits de plusieurs façons',
+                'description' => 'Paires d’artistes aux noms presque identiques (« Ska P » / « Ska-P », « Frances Cabrel » / « Francis Cabrel »), les plus sûres d’abord, le plus présent en premier. À vérifier (get_artist) avant de proposer une fusion (artist.mergedInto).',
+                'route' => ['GET', '/admin/artist-lookalikes'],
+                'query' => $page,
+                'props' => ['limit' => $limit(500, 50), 'offset' => $offset],
             ],
             'list_artists' => [
                 'title' => 'Lister des artistes',
@@ -194,7 +207,7 @@ final class McpTools
                     Propose un lot de changements à l'admin. Rien ne change dans la bibliothèque tant que l'admin ne l'a pas appliqué (Admin > Propositions) ; il peut aussi le refuser, ou l'annuler après coup.
                     Un lot = un thème (« Genres des albums de jazz », « Fusion des doublons d'artistes ») ; donner un motif court à chaque changement.
                     Chaque changement : entityType + entityId + field + value. Champs possibles :
-                    - album : title, year (ou null), albumArtist (nom, ou null), isCompilation, genreIds (liste d'identifiants de list_genres) ;
+                    - album : title, year (ou null), albumArtist (nom, ou null), isCompilation, genreIds (liste d'identifiants de list_genres), kind (album ou loose : traiter un dossier en vrac comme un album, ou l'inverse), mergedInto (identifiant d'un autre album : fusion des doublons ; devient un déplacement par piste) ;
                     - track : title, artistCredit, discNumber, trackNumber, bpm, key (notation anglaise : C, Am, F#m), genreIds (null = ceux de l'album), albumId (déplacer la piste) ;
                     - artist : name, sortName, mergedInto (identifiant de l'artiste qui le remplace : fusion) ;
                     - genreAlias : alias (valeur de tag, à la place de entityId) + field genreId (ou null pour détacher).

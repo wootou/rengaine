@@ -305,6 +305,94 @@ final class AdminApiTest extends ApiCase
         $this->assertError($this->admin('POST', "/api/v2/admin/albums/$album2/merge", ['intoAlbumId' => $album2]), 400, 'bad_request', 'adminMergeAlbum');
     }
 
+    /** IA-05 : type d'album corrigé (survit au scan), filtres de la liste, fusion proposée par l'agent. */
+    public function testTypeDAlbumFiltresEtFusionProposee(): void
+    {
+        $album2 = $this->albumId('Album 2');
+        $album10 = $this->albumId('Album 10');
+        $ids = fn (string $q) => array_column($this->admin('GET', "/api/v2/albums?limit=500&$q")->data()['items'], 'id');
+
+        // Album 2 traité comme des pistes en vrac : titre = nom du dossier, gardé après le scan
+        $r = $this->admin('PATCH', "/api/v2/admin/albums/$album2", ['kind' => 'loose']);
+        $this->assertContract($r, 'adminUpdateAlbum', 200);
+        $this->assertSame(['loose', 'Groupe - Album 2'], [$r->data()['kind'], $r->data()['title']]);
+        $this->reindex(true);
+        $this->assertSame('loose', $this->admin('GET', "/api/v2/albums/$album2")->data()['kind'], 'survit au scan');
+        $this->assertContract($this->admin('GET', '/api/v2/albums?kind=loose'), 'listAlbums', 200);
+        $this->assertSame([$album2], $ids('kind=loose'));
+        $this->assertTrue(!in_array($album2, $ids('kind=album'), true));
+        $this->assertError($this->admin('PATCH', "/api/v2/admin/albums/$album2", ['kind' => 'autre']), 400, 'bad_request', 'adminUpdateAlbum');
+        $c = $this->admin('GET', "/api/v2/admin/corrections?entityType=album&entityId=$album2&status=active")->data()['items'];
+        $this->assertSame([['kind', 'album']], array_map(static fn ($x) => [$x['field'], $x['previousValue']], $c));
+        $this->admin('POST', '/api/v2/admin/corrections/' . $c[0]['id'] . '/revert');
+        $this->assertSame(['album', 'Album 2'], [$this->admin('GET', "/api/v2/albums/$album2")->data()['kind'], $this->admin('GET', "/api/v2/albums/$album2")->data()['title']]);
+
+        // Filtres « il manque » : année effacée sur Album 10, puis remise
+        $this->admin('PATCH', "/api/v2/admin/albums/$album10", ['year' => null]);
+        $this->assertSame([$album10], $ids('missing=year'));
+        $this->assertTrue(in_array($album10, $ids('missing=genre,year'), true));
+        $comp = $ids('compilation=true');
+        $this->assertSame([], array_values(array_intersect($comp, $ids('compilation=false'))), 'compilation=true et false se partagent la liste');
+        $this->assertError($this->admin('GET', '/api/v2/albums?missing=titre'), 400, 'bad_request', 'listAlbums');
+        foreach ($this->admin('GET', "/api/v2/admin/corrections?entityType=album&entityId=$album10&status=active")->data()['items'] as $x) {
+            $this->admin('POST', '/api/v2/admin/corrections/' . $x['id'] . '/revert');
+        }
+
+        // Fusion proposée par l'agent : un déplacement par piste ; rien ne bouge avant l'admin
+        $agent = $this->token('agent');
+        $r = $this->as($agent, 'POST', '/api/v2/admin/change-sets', ['title' => 'Doublons', 'changes' => [['entityType' => 'album', 'entityId' => $album10, 'field' => 'mergedInto', 'value' => $album2]]]);
+        $this->assertContract($r, 'adminCreateChangeSet', 201);
+        $set = $this->admin('GET', '/api/v2/admin/change-sets/' . $r->data()['id'])->data();
+        $this->assertSame([['track', 'albumId', $album2, 'Fusion de l’album « Album 10 » dans « Album 2 »']],
+            array_map(static fn ($x) => [$x['entityType'], $x['field'], $x['value'], $x['reason']], $set['changes']));
+        $this->assertSame(1, $this->admin('GET', "/api/v2/albums/$album10")->data()['trackCount']);
+        $this->assertContract($this->admin('POST', '/api/v2/admin/change-sets/' . $set['id'] . '/apply'), 'adminDecideChangeSet', 200);
+        $this->assertSame(404, $this->admin('GET', "/api/v2/albums/$album10")->status, 'album vidé, masqué');
+        $this->assertSame(3, $this->admin('GET', "/api/v2/albums/$album2")->data()['trackCount']);
+        $this->admin('POST', '/api/v2/admin/change-sets/' . $set['id'] . '/revert');
+        $this->assertSame(1, $this->admin('GET', "/api/v2/albums/$album10")->data()['trackCount']);
+        foreach ([[$album10, $album10, 'value'], [$album10, 999999, 'value'], [999999, $album2, 'entityId']] as [$from, $into, $field]) {
+            $r = $this->as($agent, 'POST', '/api/v2/admin/change-sets', ['title' => 'x', 'changes' => [['entityType' => 'album', 'entityId' => $from, 'field' => 'mergedInto', 'value' => $into]]]);
+            $this->assertError($r, 400, 'bad_request', 'adminCreateChangeSet');
+            $this->assertSame("changes[0].$field", $r->data()['error']['details']['field'] ?? null, $r->raw);
+        }
+    }
+
+    /** IA-05 : forme réduite d'un album pour un modèle, artistes écrits de plusieurs façons, version. */
+    public function testAlbumCompactSosiesEtVersion(): void
+    {
+        $id = $this->albumId('Lemonade');
+        $r = $this->as($this->token('agent'), 'GET', "/api/v2/admin/albums/$id?compact=true");
+        $this->assertContract($r, 'adminGetAlbum', 200);
+        $keys = array_keys($r->data()['tracks'][0]);
+        sort($keys);
+        $this->assertSame(['artistCredit', 'discNumber', 'durationMs', 'id', 'title', 'trackNumber'], $keys);
+        $this->assertSame(['trackId', 'storageKey', 'tags'], array_keys($r->data()['files'][0]));
+        $this->assertTrue(strlen($r->raw) < strlen($this->admin('GET', "/api/v2/admin/albums/$id")->raw), 'plus court');
+
+        // « Bey-oncé » (créé ici) et « Beyoncé » : même clé sans ponctuation ni espaces ; « Groupee » : une lettre de plus
+        $bey = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Beyoncé'");
+        $track = (int) $this->db->value("SELECT id FROM tracks WHERE title = 'Dix'");
+        $this->db->run("INSERT INTO artists (name) VALUES ('Bey-oncé'), ('Groupee')");
+        $fake = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Bey-oncé'");
+        $typo = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Groupee'");
+        $this->db->run("INSERT INTO track_artists (track_id, artist_id, role, position) VALUES (?, ?, 'featured', 9), (?, ?, 'featured', 10)", [$track, $fake, $track, $typo]);
+        try {
+            $r = $this->as($this->token('agent'), 'GET', '/api/v2/admin/artist-lookalikes');
+            $this->assertContract($r, 'adminListArtistLookalikes', 200);
+            $pairs = array_map(static fn ($p) => [array_column($p['artists'], 'id'), $p['reason'], $p['distance']], $r->data()['items']);
+            $groupe = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Groupe'");
+            $this->assertTrue(in_array([[$bey, $fake], 'sameKey', 0], $pairs, true), json_encode($pairs));
+            $this->assertTrue(in_array([[$groupe, $typo], 'close', 1], $pairs, true), json_encode($pairs));
+            $this->assertError($this->as($this->token('user'), 'GET', '/api/v2/admin/artist-lookalikes'), 403, 'forbidden', 'adminListArtistLookalikes');
+        } finally {
+            $this->db->run('DELETE FROM track_artists WHERE artist_id IN (?, ?)', [$fake, $typo]);
+            $this->db->run('DELETE FROM artists WHERE id IN (?, ?)', [$fake, $typo]);
+        }
+
+        $this->assertSame(\Musique\Api\Kernel::RELEASE, $this->call('GET', '/api/v2/server')->data()['serverVersion']);
+    }
+
     public function testArtisteRenommePuisFusionne(): void
     {
         $groupe = (int) $this->artistId('Groupe');

@@ -4,7 +4,7 @@ Rengaine permet à une IA de vous aider à ranger une grande bibliothèque (genr
 d'artistes, valeurs de tags) sans jamais la changer dans votre dos : une IA ne peut que **proposer** des lots
 de corrections, que vous appliquez ou refusez dans **Admin > Propositions**, et qui restent annulables.
 
-Il y a deux façons de faire entrer une IA. Elles utilisent les mêmes 20 outils.
+Il y a deux façons de faire entrer une IA. Elles utilisent les mêmes 21 outils.
 
 ## 1. N'importe quel client MCP (recommandé)
 
@@ -27,7 +27,7 @@ s'y connecter : Claude Code, et les autres clients compatibles.
 Outils : rechercher, lister et lire les albums (avec les tags bruts des fichiers et les corrections
 actives), les artistes, les pistes, les genres, les valeurs de tags non rattachées, les collections, les
 doublons, les mêmes enregistrements, les fichiers abîmés, le dépôt, les erreurs d'indexation, les
-corrections, les lots ; et `propose_changes`, le seul qui écrit (il crée un lot en attente). Le jeton ne
+corrections, les lots, les artistes écrits de plusieurs façons ; et `propose_changes`, le seul qui écrit (il crée un lot en attente). Le jeton ne
 fonctionne que sur l'API ; une session de navigateur ne peut pas utiliser le point d'accès MCP.
 
 Les clients qui exigent OAuth pour un serveur distant (certains assistants en ligne) ne peuvent pas encore

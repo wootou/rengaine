@@ -70,6 +70,19 @@ final class Shares
         return $row === null ? null : self::format($row);
     }
 
+    /**
+     * Révoque tous les liens valables d'un compte (mot de passe changé ou réinitialisé : un lien créé par
+     * une session volée ne doit pas lui survivre). @return list<int> les liens révoqués
+     */
+    public function revokeAll(int $userId): array
+    {
+        $ids = $this->activeIds($userId);
+        if ($ids !== []) {
+            $this->db->run('UPDATE queue_shares SET revoked_at = CURRENT_TIMESTAMP(3) WHERE user_id = ? AND ' . self::VALID, [$userId]);
+        }
+        return $ids;
+    }
+
     public function revoke(int $id, int $userId): bool
     {
         return $this->db->run(

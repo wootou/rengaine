@@ -306,6 +306,54 @@ final class RemoteApiTest extends ApiCase
         $this->assertSame([], array_values(array_filter($this->as($this->token('user'), 'GET', '/api/v2/me/shares')->data()['items'], static fn ($i) => $i['id'] === $s['id'])));
     }
 
+    /** Un lien créé par une session volée ne survit pas au nouveau mot de passe (revue de sécurité R1). */
+    public function testNouveauMotDePasseRevoqueLesLiens(): void
+    {
+        $uid = $this->userId('user2');
+        $restore = fn () => $this->db->run('UPDATE users SET password_hash = ? WHERE id = ?', [\Musique\Auth\Passwords::hash(self::PASSWORD), $uid]);
+        try {
+            // 1. Changement depuis le compte : tous les liens tombent, l'invité connecté est prévenu
+            $s = $this->share('user2');
+            $g = $this->guest($s['token']);
+            $this->assertContract($this->asGuest($g, 'GET', '/api/v2/remote'), 'getRemote', 200);
+            $guestListener = $this->listen($g['state']['channel']);
+            $ownerListener = $this->listen($this->as($this->token('user2'), 'GET', '/api/v2/me/realtime')->data());
+            $other = $this->share('user'); // les liens d'un autre compte ne bougent pas
+            $r = $this->as($this->token('user2'), 'POST', '/api/v2/me/password', ['currentPassword' => self::PASSWORD, 'newPassword' => 'nouveau-mot-de-passe']);
+            $this->assertContract($r, 'changePassword', 204);
+            $this->assertError($this->asGuest($g, 'GET', '/api/v2/remote'), 401, 'unauthorized', 'getRemote');
+            $this->assertError($this->call('POST', '/api/v2/remote/session', ['token' => $s['token']]), 401, 'invalid_token', 'openRemoteSession');
+            $this->assertSame([], $this->as($this->token('user2'), 'GET', '/api/v2/me/shares')->data()['items']);
+            $this->assertTrue(in_array(['type' => 'revoked'], $this->received($guestListener), true), 'l’invité est prévenu');
+            $this->assertTrue(in_array(['type' => 'shares'], $this->received($ownerListener), true), 'le lecteur relit ses liens');
+            $this->assertSame([$other['id']], array_column($this->as($this->token('user'), 'GET', '/api/v2/me/shares')->data()['items'], 'id'));
+            $this->assertSame(1, (int) $this->db->value("SELECT JSON_EXTRACT(after_value, '$.revokedShares') FROM audit_log WHERE action = 'user.password' AND target_id = ? ORDER BY id DESC LIMIT 1", [$uid]));
+            $restore();
+
+            // 2. Réinitialisation par le lien reçu par mail : pareil
+            $s = $this->share('user2');
+            $reset = bin2hex(random_bytes(16));
+            $this->db->run('INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR))', [$uid, hash('sha256', $reset, true)]);
+            $r = $this->call('POST', '/api/v2/auth/password/reset', ['token' => $reset, 'newPassword' => 'un-nouveau-mot-de-passe']);
+            $this->assertContract($r, 'resetPassword', 204);
+            $this->assertError($this->call('POST', '/api/v2/remote/session', ['token' => $s['token']]), 401, 'invalid_token', 'openRemoteSession');
+            $restore();
+            unset(self::$env['tokens']['user2']);
+
+            // 3. Suspension par l'admin : les liens ne reviennent pas à la réactivation
+            $s = $this->share('user2');
+            $admin = $this->token('admin');
+            $this->assertContract($this->as($admin, 'PATCH', "/api/v2/admin/users/$uid", ['status' => 'suspended']), 'adminUpdateUser', 200);
+            $this->assertContract($this->as($admin, 'PATCH', "/api/v2/admin/users/$uid", ['status' => 'active']), 'adminUpdateUser', 200);
+            $this->assertError($this->call('POST', '/api/v2/remote/session', ['token' => $s['token']]), 401, 'invalid_token', 'openRemoteSession');
+            $this->assertSame(1, (int) $this->db->value("SELECT JSON_EXTRACT(after_value, '$.revokedShares') FROM audit_log WHERE action = 'user.suspend' AND target_id = ? ORDER BY id DESC LIMIT 1", [$uid]));
+        } finally {
+            $this->db->run("UPDATE users SET status = 'active' WHERE id = ?", [$uid]);
+            $restore();
+            unset(self::$env['tokens']['user2']); // révoqué par la réinitialisation
+        }
+    }
+
     public function testAdminDesactiveLaTelecommande(): void
     {
         $s = $this->share();

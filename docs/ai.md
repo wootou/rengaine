@@ -4,7 +4,7 @@ Rengaine lets an AI help you tidy a large library (genres, years, artist spellin
 ever changing it behind your back: an AI can only **propose** batches of corrections, which you apply or
 reject in **Admin > Proposals**, and which stay reversible.
 
-There are two ways to bring an AI in. They use the same 20 tools.
+There are two ways to bring an AI in. They use the same 21 tools.
 
 ## 1. Any MCP client (recommended)
 
@@ -25,7 +25,7 @@ Claude Code, and other compatible clients.
 
 Tools: search, list and read albums (with raw file tags and active corrections), artists, tracks,
 genres, unmapped tag values, collections, duplicates, same recordings, damaged files, inbox, indexing
-errors, corrections, proposal batches; and `propose_changes`, the only one that writes (it creates a
+errors, corrections, proposal batches, artists spelled several ways; and `propose_changes`, the only one that writes (it creates a
 pending batch). The token only works on the API; a browser session cannot use the MCP endpoint.
 
 Clients that require OAuth for remote servers (some hosted assistants) cannot connect yet.

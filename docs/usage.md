@@ -48,6 +48,8 @@ and the server address.
 one hour to a week, with the rights you choose: add tracks, reorder and remove, play/pause/skip, volume.
 A guest opens it on their phone without an account, enters a first name, and steers the player that is
 playing. Revoke the link at any time; the admin can switch the feature off for the whole server.
+Changing or resetting your password revokes every link at once (a guest who is connected is told), and so
+does a suspension of the account: share new links afterwards.
 
 ## Your data
 

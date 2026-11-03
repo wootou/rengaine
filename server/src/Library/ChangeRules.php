@@ -47,6 +47,7 @@ final class ChangeRules
             'album.year' => $in->int($key, 1000, 2100, true, true),
             'album.album_artist' => $raw === null ? $in->string($key, 0, 0, true, true) : $in->text($key, 1, 255),
             'album.is_compilation' => $in->bool($key),
+            'album.kind' => $in->enum($key, ['album', 'loose']),
             'album.genre_ids' => $this->genreIds((array) $in->intList($key, 50), $key),
             'album.cover' => $this->cover($in->string($key, 64, 64, true, true), $key),
             'track.artist_credit' => $raw === null ? $in->string($key, 0, 0, true, true) : $in->text($key, 1, 500),

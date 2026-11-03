@@ -20,7 +20,7 @@ final class Corrections
 {
     /** Nom du champ dans l'API → nom stocké. */
     public const ALBUM_FIELDS = ['title' => 'title', 'year' => 'year', 'albumArtist' => 'album_artist',
-        'isCompilation' => 'is_compilation', 'genreIds' => 'genre_ids', 'coverImageHash' => 'cover'];
+        'isCompilation' => 'is_compilation', 'genreIds' => 'genre_ids', 'coverImageHash' => 'cover', 'kind' => 'kind'];
     public const TRACK_FIELDS = ['title' => 'title', 'artistCredit' => 'artist_credit', 'discNumber' => 'disc_number',
         'trackNumber' => 'track_number', 'bpm' => 'bpm', 'key' => 'key', 'genreIds' => 'genre_ids', 'albumId' => 'album_id'];
     public const ARTIST_FIELDS = ['name' => 'name', 'sortName' => 'sort_name', 'mergedInto' => 'merged_into'];
@@ -71,6 +71,7 @@ final class Corrections
                 'year' => Format::int($db->value('SELECT year FROM albums WHERE id = ?', [$id])),
                 'album_artist' => $db->value('SELECT ar.name FROM albums a LEFT JOIN artists ar ON ar.id = a.album_artist_id WHERE a.id = ?', [$id]),
                 'is_compilation' => (bool) $db->value('SELECT is_compilation FROM albums WHERE id = ?', [$id]),
+                'kind' => $db->value('SELECT kind FROM albums WHERE id = ?', [$id]),
                 'cover' => ($h = $db->value('SELECT HEX(i.sha256) FROM albums a JOIN images i ON i.id = a.cover_image_id WHERE a.id = ?', [$id])) === null ? null : strtolower((string) $h),
                 // Lignes complètes (genre + source) : l'annulation les remet telles quelles
                 'genre_ids' => array_map(static fn ($r) => ['id' => (int) $r['genre_id'], 'source' => $r['source']],
@@ -370,6 +371,9 @@ final class Corrections
         }
         if (array_key_exists('is_compilation', $values)) {
             $this->db->run('UPDATE albums SET is_compilation = ? WHERE id = ?', [(int) (bool) $values['is_compilation'], $id]);
+        }
+        if (array_key_exists('kind', $values)) {
+            $this->db->run('UPDATE albums SET kind = ? WHERE id = ?', [$values['kind'] === 'loose' ? 'loose' : 'album', $id]);
         }
         if (array_key_exists('cover', $values)) {
             $this->db->run('UPDATE albums SET cover_image_id = (SELECT id FROM images WHERE sha256 = UNHEX(?)) WHERE id = ?', [$values['cover'], $id]);

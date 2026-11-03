@@ -8,8 +8,8 @@ Build a readable page with `sh api/doc.sh` (Redoc, served locally, no CDN): it w
 
 Highlights:
 
-- Base path `/api/v2`. `GET /server` (no authentication) tells the version, the available features and
-  the language.
+- Base path `/api/v2`. `GET /server` (no authentication) tells the API version (`apiVersion`), the
+  version of Rengaine itself (`serverVersion`, since 2.29.0), the available features and the language.
 - Authentication: a session cookie plus `X-CSRF-Token` for the web player, `Authorization: Bearer` for
   apps and agents. Devices pair with a short code or a QR code.
 - Errors always have the same shape: `{"error": {"status", "code", "message", "requestId"}}`; `code` is

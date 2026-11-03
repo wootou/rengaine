@@ -61,6 +61,11 @@ final class AlbumBuilder
         [$tagTitle, $titleShare] = Text::majority($albumTags);
         $hasAlbumTags = count(array_filter($albumTags, static fn ($v) => $v !== null)) > 0;
         $loose = $hasAlbumTags && $titleShare < 0.5;
+        // Corrections actives de l'album (le type choisi par l'admin décide du titre et de l'artiste)
+        $albumCorr = $album === null ? [] : $this->corrections('album', [(int) $album['id']])[(int) $album['id']] ?? [];
+        if (array_key_exists('kind', $albumCorr)) {
+            $loose = $albumCorr['kind'] === 'loose';
+        }
         $title = match (true) {
             $loose => $dir === '' ? 'Racine' : (Text::clean(basename($dir)) ?? basename($dir)),
             $tagTitle !== null => $tagTitle,
@@ -85,8 +90,6 @@ final class AlbumBuilder
         [$mbid] = Text::majority(array_map(static fn ($f) => $f['tags']['musicbrainz_album_id'] ?? null, $files));
         $mbid = $mbid !== null && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $mbid) ? strtolower($mbid) : null;
 
-        // Corrections actives de l'album
-        $albumCorr = $album === null ? [] : $this->corrections('album', [(int) $album['id']])[(int) $album['id']] ?? [];
         if (array_key_exists('title', $albumCorr)) {
             $title = (string) $albumCorr['title'];
         }

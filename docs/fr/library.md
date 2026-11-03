@@ -9,6 +9,7 @@ de musique. Il reconnaît MP3, FLAC, M4A/AAC, Ogg/Opus, WAV, AIFF, WMA, APE et W
 appartiennent à leur parent. Titre, artiste et année viennent d'un vote majoritaire sur les tags des
 pistes de l'album, et du nom du dossier (`Artiste - Album`) quand les tags manquent. Un dossier dont les
 pistes n'ont pas d'album commun devient un dossier « en vrac » : ses pistes restent trouvables et jouables.
+Une correction peut faire passer un dossier de « en vrac » à « album », ou l'inverse ; ce choix survit aux scans.
 
 Quand une même piste existe en MP3 et en FLAC dans un album, c'est une seule piste avec deux fichiers : la
 version sans perte est jouée, et **Admin > Doublons** peut déplacer les MP3 en trop dans une corbeille.

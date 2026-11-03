@@ -19,5 +19,11 @@ test('page d’essai du son : pistes proposées, lecture du fichier d’origine 
   await page.getByRole('button', { name: 'Lecture' }).click();
   await expect(page.getByRole('log')).toContainText('Converti en Opus 256');
   await expect.poll(() => page.locator('#log').textContent().then((t) => (t ?? '').split('Converti en Opus 256')[1] ?? ''), { timeout: 15_000 }).toContain('playing');
+  // Changer de sortie en cours d'écoute : Web Audio, puis retour au son direct, sans arrêter la lecture
+  await page.getByLabel('Sortie').selectOption('r44');
+  await expect(page.getByRole('log')).toContainText('Web Audio : 44100 Hz');
+  await expect.poll(() => page.locator('#log').textContent().then((t) => (t ?? '').split('Web Audio : 44100 Hz')[1] ?? ''), { timeout: 15_000 }).toContain('playing');
+  await page.getByLabel('Sortie').selectOption('direct');
+  await expect(page.getByRole('log')).toContainText('sortie directe');
   await page.getByRole('button', { name: 'Arrêt' }).click();
 });

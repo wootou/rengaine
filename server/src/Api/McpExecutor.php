@@ -86,13 +86,11 @@ final class McpExecutor
             return ['text' => $text, 'error' => true, 'data' => null];
         }
         if ($tool['write'] ?? false) {
-            $this->ctx->logger->info('MCP : lot proposé', ['tool' => $name, 'id' => is_array($data) ? ($data['id'] ?? null) : null]);
+            $this->ctx->logger->info('MCP : lot proposé', ['tool' => $name, 'id' => is_object($data) ? ($data->id ?? null) : null]);
         }
-        return [
-            'text' => (string) json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE),
-            'error' => false,
-            'data' => $data,
-        ];
+        $text = (string) json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE);
+        // data : en tableaux pour le code PHP (Organizer) ; le texte, lui, garde les objets JSON
+        return ['text' => $text, 'error' => false, 'data' => json_decode($text, true)];
     }
 
     /** @return array{text: string, error: bool, data: mixed} */
@@ -154,7 +152,8 @@ final class McpExecutor
         [$class, $fn] = $route['handler'];
         $params = array_map(static fn (string $v) => ctype_digit($v) ? (int) $v : $v, $route['params']);
         $response = (new $class($ctx))->$fn($params);
-        return $response->body === null ? null : json_decode($response->body, true);
+        // En objets, pas en tableaux : json_decode(…, true) rendait {} en [] et {"0": …} en liste (tags bruts)
+        return $response->body === null ? null : json_decode($response->body, false);
     }
 
     private static function router(): Router

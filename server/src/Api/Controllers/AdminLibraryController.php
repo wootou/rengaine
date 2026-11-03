@@ -20,6 +20,7 @@ use Musique\Library\ChangeSets;
 use Musique\Library\Corrections;
 use Musique\Library\Genres;
 use Musique\Library\Images;
+use Musique\Library\Lookalikes;
 
 final class AdminLibraryController
 {
@@ -363,6 +364,16 @@ final class AdminLibraryController
         return Response::json($sets->out($setId));
     }
 
+    /** Artistes écrits de plusieurs façons, candidats à la fusion. */
+    public function listArtistLookalikes(array $params): Response
+    {
+        $r = $this->ctx->request;
+        $limit = (int) $r->queryInt('limit', 50, 1, 500);
+        $offset = (int) $r->queryInt('offset', 0, 0);
+        $pairs = (new Lookalikes($this->ctx->db))->pairs();
+        return Response::json(['items' => array_slice($pairs, $offset, $limit), 'total' => count($pairs), 'limit' => $limit, 'offset' => $offset]);
+    }
+
     public function updateArtist(array $params): Response
     {
         $id = (int) $params['id'];
@@ -453,6 +464,27 @@ final class AdminLibraryController
         return [$type, $id, $field, $value];
     }
 
+    /**
+     * Fusion d'album proposée (album.mergedInto) : un déplacement par piste, comme POST /admin/albums/{id}/merge.
+     * @return list<array{0: string, 1: int, 2: string, 3: int, 4: ?string}>
+     */
+    private function albumMergeChanges(array $c, int $i, ?string $reason): array
+    {
+        $p = "changes[$i].";
+        $in = new Input($c, $p);
+        $db = $this->ctx->db;
+        $id = (int) $in->int('entityId', 1);
+        $from = $db->one('SELECT id, title FROM albums WHERE id = ? AND missing_since IS NULL', [$id]) ?? throw ApiError::invalid($p . 'entityId', 'Élément introuvable');
+        $into = (int) $in->int('value', 1);
+        $target = $into === $id ? null : $db->one('SELECT id, title FROM albums WHERE id = ? AND missing_since IS NULL', [$into]);
+        if ($target === null) {
+            throw ApiError::invalid($p . 'value', 'Album de destination inconnu (ou identique)');
+        }
+        $tracks = array_map('intval', array_column($db->all('SELECT id FROM tracks WHERE album_id = ? AND missing_since IS NULL ORDER BY id', [$id]), 'id'));
+        $why = $reason ?? "Fusion de l’album « {$from['title']} » dans « {$target['title']} »";
+        return array_map(static fn (int $t) => ['track', $t, 'album_id', $into, $why], $tracks);
+    }
+
     public function createChangeSet(array $params): Response
     {
         $in = new Input($this->ctx->request->json());
@@ -468,6 +500,10 @@ final class AdminLibraryController
                 throw ApiError::invalid("changes[$i]", 'Objet attendu');
             }
             $reason = (new Input($c, "changes[$i]."))->string('reason', 0, 1000, false, true);
+            if (($c['entityType'] ?? null) === 'album' && ($c['field'] ?? null) === 'mergedInto') {
+                array_push($checked, ...$this->albumMergeChanges($c, $i, $reason === '' ? null : $reason));
+                continue;
+            }
             $checked[] = [...$this->checkChange($c, $i), $reason === '' ? null : $reason];
         }
         $uid = $this->ctx->user()->userId;
@@ -553,6 +589,13 @@ final class AdminLibraryController
             "SELECT * FROM corrections WHERE status = 'active' AND ((entity_type = 'album' AND entity_id = ?)
                 OR (entity_type = 'track' AND entity_id IN (SELECT id FROM tracks WHERE album_id = ?))) ORDER BY id", [$id, $id]
         ));
+        if ($this->ctx->request->queryBool('compact') === true) {
+            // Pour un modèle d'IA : l'essentiel de chaque piste, les tags bruts des fichiers
+            $album['tracks'] = array_map(static fn ($t) => array_intersect_key($t, array_flip(['id', 'discNumber', 'trackNumber', 'title', 'artistCredit', 'durationMs'])), $album['tracks']);
+            $album['files'] = array_map(static fn ($f) => ['trackId' => $f['trackId'], 'storageKey' => $f['storageKey'], 'tags' => $f['tags']], $album['files']);
+            unset($album['loudness'], $album['collections']);
+            $album['isCompilation'] = (bool) ($album['isCompilation'] ?? false);
+        }
         return Response::json($album);
     }
 

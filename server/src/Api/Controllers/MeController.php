@@ -16,6 +16,7 @@ use Musique\Catalog\Serializer;
 use Musique\Http\ApiError;
 use Musique\Http\Input;
 use Musique\Http\Response;
+use Musique\Playback\Shares;
 
 final class MeController
 {
@@ -64,11 +65,14 @@ final class MeController
             $this->ctx->security->event('password_change_failed', $this->ctx->request->ip, ['user' => $p->userId, 'rid' => $this->ctx->requestId]);
             throw ApiError::unauthorized('Mot de passe actuel incorrect', 'invalid_credentials');
         }
-        $this->ctx->db->transaction(function () use ($p, $new): void {
+        $shares = $this->ctx->db->transaction(function () use ($p, $new): array {
             $this->ctx->db->run('UPDATE users SET password_hash = ? WHERE id = ?', [Passwords::hash($new), $p->userId]);
             $revoked = $this->ctx->tokens()->revokeAll($p->userId, $p->tokenId, $p->userId);
-            $this->ctx->audit('user.password', 'user', $p->userId, null, ['revokedTokens' => $revoked]);
+            $shares = (new Shares($this->ctx->db))->revokeAll($p->userId);
+            $this->ctx->audit('user.password', 'user', $p->userId, null, ['revokedTokens' => $revoked, 'revokedShares' => count($shares)]);
+            return $shares;
         });
+        RemoteController::announceRevoked($this->ctx, $p->userId, $shares);
         $this->ctx->notices()->passwordChanged($p->userId, false);
         return Response::noContent();
     }

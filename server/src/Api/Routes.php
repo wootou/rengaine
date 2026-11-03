@@ -124,6 +124,7 @@ final class Routes
         $r->add('PATCH', '/admin/tracks/{id}', [L::class, 'updateTrack'], $admin);
         $r->add('PATCH', '/admin/artists/{id}', [L::class, 'updateArtist'], $admin);
         $r->add('POST', '/admin/artists/{id}/merge', [L::class, 'mergeArtist'], $admin);
+        $r->add('GET', '/admin/artist-lookalikes', [L::class, 'listArtistLookalikes'], $adminAgent);
         $r->add('PUT', '/admin/artists/{id}/image', [L::class, 'setArtistImage'], $admin);
         $r->add('POST', '/admin/collections', [L::class, 'createCollection'], $admin);
         $r->add('PATCH', '/admin/collections/{id}', [L::class, 'updateCollection'], $admin);

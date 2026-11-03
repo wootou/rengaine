@@ -27,7 +27,10 @@ use Musique\Storage\StorageException;
 final class Kernel
 {
     public const BASE = '/api/v2';
-    public const VERSION = '2.28.0';
+    /** Version du contrat d'API (api/openapi.yaml). */
+    public const VERSION = '2.29.0';
+    /** Version de Rengaine (CHANGELOG) : « -dev » entre deux versions publiées. */
+    public const RELEASE = '1.0.3';
 
     private Router $router;
     private ?Database $db = null;

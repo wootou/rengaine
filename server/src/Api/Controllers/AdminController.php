@@ -19,6 +19,7 @@ use Musique\Library\Duplicates;
 use Musique\Library\SameRecordings;
 use Musique\Log\LogReader;
 use Musique\Log\Logger;
+use Musique\Playback\Shares;
 
 final class AdminController
 {
@@ -128,7 +129,8 @@ final class AdminController
         }
 
         $revoked = 0;
-        $this->ctx->db->transaction(function () use ($id, $me, $before, $status, $role, $name, &$revoked): void {
+        $shares = [];
+        $this->ctx->db->transaction(function () use ($id, $me, $before, $status, $role, $name, &$revoked, &$shares): void {
             $db = $this->ctx->db;
             if ($name !== null) {
                 $db->run('UPDATE users SET display_name = ? WHERE id = ?', [$name, $id]);
@@ -144,9 +146,12 @@ final class AdminController
                 }
                 if ($status === 'suspended') {
                     $revoked = $this->ctx->tokens()->revokeAll($id, null, $me->userId);
+                    // Les liens de télécommande aussi : une réactivation, même par erreur, ne doit pas les rouvrir
+                    $shares = (new Shares($db))->revokeAll($id);
                 }
             }
         });
+        RemoteController::announceRevoked($this->ctx, $id, $shares);
         $after = $this->loadUser($id);
         $action = match (true) {
             $status === 'active' && $before['status'] === 'pending' => 'user.approve',
@@ -157,7 +162,7 @@ final class AdminController
         };
         $this->ctx->audit($action, 'user', $id,
             ['status' => $before['status'], 'role' => $before['role'], 'displayName' => $before['display_name']],
-            ['status' => $after['status'], 'role' => $after['role'], 'displayName' => $after['display_name'], 'revokedTokens' => $revoked]);
+            ['status' => $after['status'], 'role' => $after['role'], 'displayName' => $after['display_name'], 'revokedTokens' => $revoked, 'revokedShares' => count($shares)]);
         if ($action === 'user.approve') {
             $this->ctx->notices()->accountApproved($id);
         } elseif ($action === 'user.refuse' && $before['status'] === 'pending') {

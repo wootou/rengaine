@@ -50,7 +50,8 @@ scannez le QR code depuis l'appli, ou tapez le code et l'adresse du serveur.
 valable d'une heure à une semaine, avec les droits de votre choix : ajouter des pistes, déplacer et
 retirer, lecture / pause / suivante, volume. Un invité l'ouvre sur son téléphone sans compte, donne un
 prénom, et pilote le lecteur qui joue. Révoquez le lien quand vous voulez ; l'admin peut couper la fonction
-pour tout le serveur.
+pour tout le serveur. Changer ou réinitialiser son mot de passe révoque tous les liens d'un coup (l'invité
+connecté en est prévenu), de même qu'une suspension du compte : partagez ensuite de nouveaux liens.
 
 ## Vos données
 
