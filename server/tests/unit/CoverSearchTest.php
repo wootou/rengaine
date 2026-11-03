@@ -197,11 +197,12 @@ final class CoverSearchTest extends TestCase
 
     public function testSeulementUneVraieImage(): void
     {
+        // PNG fabriqué en PHP (pas de programme extérieur : la CI n'a pas ImageMagick)
         $png = static function (int $w, int $h): string {
-            $p = proc_open(['convert', '-size', "{$w}x{$h}", 'xc:#ff7a2e', 'png:-'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-            $bytes = (string) stream_get_contents($pipes[1]);
-            proc_close($p);
-            return $bytes;
+            $chunk = static fn (string $type, string $data) => pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+            $rows = str_repeat("\0" . str_repeat("\xff\x7a\x2e", $w), $h); // filtre 0, puis RVB par pixel
+            return "\x89PNG\r\n\x1a\n" . $chunk('IHDR', pack('NNCCCCC', $w, $h, 8, 2, 0, 0, 0))
+                . $chunk('IDAT', (string) gzcompress($rows)) . $chunk('IEND', '');
         };
         $serve = static fn (string $body) => static fn (string $url): array => ['status' => 200, 'body' => $body, 'location' => null, 'type' => 'image/png'];
         $url = 'https://is1-ssl.mzstatic.com/a.png';

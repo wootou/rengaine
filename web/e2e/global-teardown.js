@@ -9,7 +9,7 @@ const MUSIQUE = fileURLToPath(new URL('../../server/bin/rengaine', import.meta.u
 
 export default function teardown() {
   for (const email of [process.env.E2E_EMAIL, process.env.E2E_ADMIN_EMAIL, process.env.E2E_REQUEST_EMAIL, process.env.E2E_RESET_EMAIL, process.env.E2E_DELETE_EMAIL, process.env.E2E_AGENT_EMAIL]) {
-    if (!email || !/^e2e-[0-9a-f]{8}@dev-musique\.test$/.test(email)) continue;
+    if (!email || !/^e2e-[0-9a-f]{8}@rengaine\.test$/.test(email)) continue;
     const r = spawnSync('sudo', ['-u', 'www-data', 'php', MUSIQUE, 'user:delete', email, '--test'], { encoding: 'utf8' });
     if (r.status !== 0 && !/introuvable/.test(r.stderr + r.stdout)) console.error(`Compte de test ${email} non supprimé :`, r.stderr || r.stdout);
   }

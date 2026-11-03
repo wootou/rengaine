@@ -10,7 +10,7 @@ const MUSIQUE = fileURLToPath(new URL('../../server/bin/rengaine', import.meta.u
 
 /** @param {string} name @param {string} role @returns {[string, string]} */
 function createAccount(name, role) {
-  const email = `e2e-${randomBytes(4).toString('hex')}@dev-musique.test`;
+  const email = `e2e-${randomBytes(4).toString('hex')}@rengaine.test`;
   const password = randomBytes(18).toString('base64url');
   const r = spawnSync('sudo', ['-u', 'www-data', 'php', MUSIQUE, 'user:create', email, name, '--role', role],
     { input: password + '\n', encoding: 'utf8' });
@@ -28,7 +28,7 @@ export default function setup() {
   // Compte que l'essai « supprimer mon compte » supprime vraiment (CPT-09)
   [process.env.E2E_DELETE_EMAIL, process.env.E2E_DELETE_PASSWORD] = createAccount('Essai suppression', 'user');
   // Adresse de la demande de compte faite pendant les essais (supprimée aussi à la fin)
-  process.env.E2E_REQUEST_EMAIL = `e2e-${randomBytes(4).toString('hex')}@dev-musique.test`;
+  process.env.E2E_REQUEST_EMAIL = `e2e-${randomBytes(4).toString('hex')}@rengaine.test`;
   // Compte agent créé par l'essai des fonctions d'une IA (IA-07), supprimé à la fin
-  process.env.E2E_AGENT_EMAIL = `e2e-${randomBytes(4).toString('hex')}@dev-musique.test`;
+  process.env.E2E_AGENT_EMAIL = `e2e-${randomBytes(4).toString('hex')}@rengaine.test`;
 }
