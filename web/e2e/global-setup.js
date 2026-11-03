@@ -29,4 +29,6 @@ export default function setup() {
   [process.env.E2E_DELETE_EMAIL, process.env.E2E_DELETE_PASSWORD] = createAccount('Essai suppression', 'user');
   // Adresse de la demande de compte faite pendant les essais (supprimée aussi à la fin)
   process.env.E2E_REQUEST_EMAIL = `e2e-${randomBytes(4).toString('hex')}@dev-musique.test`;
+  // Compte agent créé par l'essai des fonctions d'une IA (IA-07), supprimé à la fin
+  process.env.E2E_AGENT_EMAIL = `e2e-${randomBytes(4).toString('hex')}@dev-musique.test`;
 }

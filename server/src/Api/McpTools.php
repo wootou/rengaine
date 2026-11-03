@@ -57,8 +57,8 @@ final class McpTools
                     'lossless' => ['type' => 'boolean', 'description' => 'true : seulement les albums disponibles sans perte'],
                     'kind' => ['type' => 'string', 'enum' => ['album', 'loose'], 'description' => 'loose : dossiers de pistes en vrac'],
                     'isCompilation' => ['type' => 'boolean'],
-                    'missing' => ['type' => 'array', 'items' => ['type' => 'string', 'enum' => ['artist', 'year', 'genre']], 'maxItems' => 3,
-                        'description' => 'Albums auxquels il manque l’une de ces informations (artist : hors compilations)'],
+                    'missing' => ['type' => 'array', 'items' => ['type' => 'string', 'enum' => ['artist', 'year', 'genre', 'cover']], 'maxItems' => 4,
+                        'description' => 'Albums auxquels il manque l’une de ces informations (artist : hors compilations ; cover : sans jaquette)'],
                     'sort' => ['type' => 'string', 'enum' => ['name', 'added', 'year', 'artist'], 'default' => 'name'],
                     'order' => $order, 'limit' => $limit(500, 50), 'offset' => $offset,
                 ],
@@ -77,6 +77,28 @@ final class McpTools
                 'route' => ['GET', '/admin/artist-lookalikes'],
                 'query' => $page,
                 'props' => ['limit' => $limit(500, 50), 'offset' => $offset],
+            ],
+            'list_duplicate_albums' => [
+                'title' => 'Albums en double',
+                'description' => 'Paires d’albums présents dans deux dossiers (même artiste, titre identique ou presque ; une copie sans artiste compte), la plus complète d’abord. Vérifier (get_album, compact) puis proposer album.removed pour la copie en trop. Différent de list_duplicates (MP3 doublés par un FLAC dans un même album).',
+                'route' => ['GET', '/admin/duplicate-albums'],
+                'query' => $page,
+                'props' => ['limit' => $limit(500, 50), 'offset' => $offset],
+            ],
+            'find_cover' => [
+                'title' => 'Chercher une jaquette',
+                'description' => 'Jaquettes candidates pour un album (iTunes, Deezer, Cover Art Archive), d’après son artiste et son titre (ou ceux donnés). exact = artiste et titre identiques. Proposer ensuite album.coverUrl avec l’url choisie. Seulement si le serveur l’a activé (sinon erreur cover_search_disabled).',
+                'route' => ['GET', '/admin/albums/{id}/cover-candidates'],
+                'query' => ['artist' => 'artist', 'title' => 'title'],
+                'props' => ['id' => $id, 'artist' => ['type' => 'string', 'maxLength' => 200], 'title' => ['type' => 'string', 'maxLength' => 200]],
+                'required' => ['id'],
+            ],
+            'suggest_credits_from_titles' => [
+                'title' => 'Artistes lus dans les titres',
+                'description' => 'Pour les pistes sans aucun artiste connu dont le titre est « Artiste - Titre » : titre et artiste proposés, nettoyés (mentions de vidéo, débits, numéros, entités HTML), inversions repérées (inverted) d’après les artistes de la bibliothèque (knownArtist). À vérifier, puis proposer title et artistCredit.',
+                'route' => ['GET', '/admin/title-credit-suggestions'],
+                'query' => ['albumId' => 'album'] + $page,
+                'props' => ['albumId' => $id, 'limit' => $limit(500, 100), 'offset' => $offset],
             ],
             'list_artists' => [
                 'title' => 'Lister des artistes',
@@ -98,13 +120,16 @@ final class McpTools
             ],
             'list_tracks' => [
                 'title' => 'Lister des pistes',
-                'description' => 'Pistes filtrées (album, artiste principal ou invité, genre, BPM).',
+                'description' => 'Pistes filtrées (album, artiste principal ou invité, genre, BPM). missing=[artist] : pistes sans aucun artiste connu (artistCreditSource « none »).',
                 'route' => ['GET', '/tracks'],
                 'query' => ['q' => 'q', 'albumId' => 'album', 'artistId' => 'artist', 'genreIds' => 'genre', 'bpmMin' => 'bpmMin', 'bpmMax' => 'bpmMax',
-                    'sort' => 'sort', 'order' => 'order'] + $page,
+                    'missing' => 'missing', 'albumKind' => 'albumKind', 'isCompilation' => 'compilation', 'sort' => 'sort', 'order' => 'order'] + $page,
                 'props' => [
                     'q' => ['type' => 'string', 'maxLength' => 200], 'albumId' => $id, 'artistId' => $id, 'genreIds' => $ids,
                     'bpmMin' => ['type' => 'number', 'minimum' => 0], 'bpmMax' => ['type' => 'number', 'minimum' => 0],
+                    'missing' => ['type' => 'array', 'items' => ['type' => 'string', 'enum' => ['artist', 'genre']], 'maxItems' => 2],
+                    'albumKind' => ['type' => 'string', 'enum' => ['album', 'loose']],
+                    'isCompilation' => ['type' => 'boolean', 'description' => 'Pistes d’une compilation (true) ou non (false)'],
                     'sort' => ['type' => 'string', 'enum' => ['name', 'added', 'bpm', 'duration'], 'default' => 'name'],
                     'order' => $order, 'limit' => $limit(500, 50), 'offset' => $offset,
                 ],
@@ -207,7 +232,7 @@ final class McpTools
                     Propose un lot de changements à l'admin. Rien ne change dans la bibliothèque tant que l'admin ne l'a pas appliqué (Admin > Propositions) ; il peut aussi le refuser, ou l'annuler après coup.
                     Un lot = un thème (« Genres des albums de jazz », « Fusion des doublons d'artistes ») ; donner un motif court à chaque changement.
                     Chaque changement : entityType + entityId + field + value. Champs possibles :
-                    - album : title, year (ou null), albumArtist (nom, ou null), isCompilation, genreIds (liste d'identifiants de list_genres), kind (album ou loose : traiter un dossier en vrac comme un album, ou l'inverse), mergedInto (identifiant d'un autre album : fusion des doublons ; devient un déplacement par piste) ;
+                    - album : title, year (ou null), albumArtist (nom, ou null), isCompilation, genreIds (liste d'identifiants de list_genres), kind (album ou loose : traiter un dossier en vrac comme un album, ou l'inverse), removed (true : masquer une copie en double, fichiers gardés, annulable), coverUrl (url d'une jaquette trouvée par find_cover : téléchargée et vérifiée tout de suite, montrée à l'admin), mergedInto (identifiant d'un autre album : fusion des doublons ; devient un déplacement par piste) ;
                     - track : title, artistCredit, discNumber, trackNumber, bpm, key (notation anglaise : C, Am, F#m), genreIds (null = ceux de l'album), albumId (déplacer la piste) ;
                     - artist : name, sortName, mergedInto (identifiant de l'artiste qui le remplace : fusion) ;
                     - genreAlias : alias (valeur de tag, à la place de entityId) + field genreId (ou null pour détacher).
@@ -219,7 +244,7 @@ final class McpTools
                     'title' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255],
                     'description' => ['type' => 'string', 'maxLength' => 10000, 'description' => 'Ce que fait le lot et pourquoi'],
                     'changes' => [
-                        'type' => 'array', 'minItems' => 1, 'maxItems' => 2000,
+                        'type' => 'array', 'minItems' => 1, 'maxItems' => 5000,
                         'items' => [
                             'type' => 'object',
                             'properties' => [

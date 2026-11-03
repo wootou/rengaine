@@ -13,6 +13,7 @@ export function track(id, o = {}) {
     id,
     title: `Piste ${id}`,
     artistCredit: 'Artiste',
+    artistCreditSource: 'tag',
     artists: [],
     album: { id: 1, title: 'Album', artistName: 'Artiste', year: 2020, ...album },
     genres: [],

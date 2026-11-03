@@ -7,6 +7,7 @@ declare(strict_types=1);
 
 namespace Musique\Api;
 
+use Musique\Auth\Capabilities;
 use Musique\Auth\Principal;
 use Musique\Config;
 use Musique\Db\Database;
@@ -49,10 +50,11 @@ final class McpExecutor
         return $out;
     }
 
+    /** Outil connu et permis au rôle (une fonction désactivée pour le jeton est refusée par run(), en clair). */
     public function has(string $name): bool
     {
         $tool = McpTools::all()[$name] ?? null;
-        return $tool !== null && $this->allowed($tool);
+        return $tool !== null && $this->options($tool) !== null;
     }
 
     /**
@@ -64,8 +66,13 @@ final class McpExecutor
     public function run(string $name, array $args): array
     {
         $tool = McpTools::all()[$name] ?? null;
-        if ($tool === null || !$this->allowed($tool)) {
+        $options = $tool === null ? null : $this->options($tool);
+        if ($tool === null || $options === null) {
             return self::failure('Outil inconnu : ' . $name);
+        }
+        // Même contrôle que le Kernel (IA-07) : l'exécuteur appelle les contrôleurs sans repasser par lui
+        if (($missing = Capabilities::missing($this->ctx->user(), $options)) !== null) {
+            return self::failure(Capabilities::denied($missing)->getMessage());
         }
         $unknown = array_diff(array_keys($args), array_keys($tool['props']));
         if ($unknown !== []) {
@@ -99,17 +106,24 @@ final class McpExecutor
         return ['text' => Lang::message($text), 'error' => true, 'data' => null];
     }
 
-    /** @param array<string, mixed> $tool */
+    /** Outil visible dans tools/list : permis au rôle, et sa fonction cochée pour le jeton. @param array<string, mixed> $tool */
     private function allowed(array $tool): bool
+    {
+        $options = $this->options($tool);
+        return $options !== null && Capabilities::missing($this->ctx->user(), $options) === null;
+    }
+
+    /** Options de la route de l'outil si le rôle y a droit, sinon null. @param array<string, mixed> $tool @return array<string, mixed>|null */
+    private function options(array $tool): ?array
     {
         [$method, $path] = $tool['route'];
         foreach (self::router()->routes() as $r) {
             if ($r['method'] === $method && $r['path'] === $path) {
                 $roles = Kernel::roles($r['options']);
-                return $roles === null || in_array($this->ctx->user()->role, $roles, true);
+                return $roles === null || in_array($this->ctx->user()->role, $roles, true) ? $r['options'] : null;
             }
         }
-        return false;
+        return null;
     }
 
     /**

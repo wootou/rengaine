@@ -101,7 +101,8 @@ final class CatalogController
                     'artist' => '(a.album_artist_id IS NULL AND a.is_compilation = 0)',
                     'year' => 'a.year IS NULL',
                     'genre' => 'NOT EXISTS (SELECT 1 FROM album_genres ag2 WHERE ag2.album_id = a.id)',
-                    default => throw ApiError::invalid('missing', 'Paramètre « missing » : valeurs possibles artist, year, genre'),
+                    'cover' => 'a.cover_image_id IS NULL',
+                    default => throw ApiError::invalid('missing', 'Paramètre « missing » : valeurs possibles artist, year, genre, cover'),
                 };
             }
             $where[] = '(' . implode(' OR ', $or) . ')';
@@ -211,6 +212,25 @@ final class CatalogController
         if (($artist = $r->queryInt('artist', null, 1)) !== null) {
             $where[] = 'EXISTS (SELECT 1 FROM track_artists ta WHERE ta.track_id = t.id AND ta.artist_id = ?)';
             $args[] = $artist;
+        }
+        if (($missing = $r->queryString('missing')) !== null) {
+            $or = [];
+            foreach (array_unique(array_map('trim', explode(',', $missing))) as $m) {
+                $or[] = match ($m) {
+                    // Aucun artiste connu (artistCreditSource « none ») : ni crédit, ni artiste principal
+                    'artist' => "(t.artist_credit IS NULL AND a.album_artist_id IS NULL AND NOT EXISTS (SELECT 1 FROM track_artists ta2 WHERE ta2.track_id = t.id AND ta2.role = 'main'))",
+                    'genre' => 'NOT EXISTS (SELECT 1 FROM track_genres tg2 WHERE tg2.track_id = t.id)',
+                    default => throw ApiError::invalid('missing', 'Paramètre « missing » : valeurs possibles artist, genre'),
+                };
+            }
+            $where[] = '(' . implode(' OR ', $or) . ')';
+        }
+        if (($albumKind = $r->queryEnum('albumKind', ['album', 'loose'])) !== null) {
+            $where[] = 'a.kind = ?';
+            $args[] = $albumKind;
+        }
+        if (($comp = $r->queryBool('compilation')) !== null) {
+            $where[] = 'a.is_compilation = ' . ($comp ? 1 : 0);
         }
         if (($genres = (new Genres($this->ctx->db))->withDescendants($r->queryIntList('genre', 100))) !== []) {
             $where[] = 'EXISTS (SELECT 1 FROM track_genres tg WHERE tg.track_id = t.id AND tg.genre_id IN (' . self::in($genres) . '))';

@@ -161,6 +161,51 @@ test('chaque onglet s’affiche sans erreur', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test('compte agent : jeton et fonctions permises, cochées puis décochées', async ({ page }) => {
+  const errors = watchErrors(page);
+  await login(page, 'admin');
+  await page.getByRole('link', { name: /^Admin/ }).click();
+  await page.getByRole('button', { name: 'Créer un compte' }).click();
+  await page.getByLabel('Rôle').selectOption('agent');
+  await page.getByLabel('Adresse e-mail (facultative pour un agent)').fill(String(process.env.E2E_AGENT_EMAIL));
+  await page.getByLabel('Nom affiché').fill('Essai IA');
+  await page.getByRole('button', { name: 'Créer', exact: true }).click();
+  await page.getByRole('link', { name: /Essai IA/ }).first().click();
+
+  // Nouveau jeton : fonctions par défaut pré-cochées, pochettes en ligne décochées
+  const create = page.locator('form.admin-form.inline').last();
+  await expect(create.getByRole('checkbox', { name: /Lire la bibliothèque/ })).toBeChecked();
+  await expect(create.getByRole('checkbox', { name: /Jaquettes en ligne/ })).not.toBeChecked();
+  await expect(create.getByText('le serveur se connecte à Internet', { exact: false })).toBeVisible();
+  await create.getByPlaceholder('Nom de l’appareil').fill('Claude Code');
+  await create.getByRole('button', { name: 'Créer le jeton' }).click();
+  await expect(page.getByText('Jeton créé.')).toBeVisible();
+  await expect(page.locator('.mcp-command')).toContainText('/api/v2/mcp');
+
+  // Sur le jeton : cocher les pochettes en ligne, enregistré tout de suite, puis décocher
+  const device = page.locator('ul.devices li', { hasText: 'Claude Code' });
+  // Case pilotée par le serveur : elle se coche une fois l'enregistrement fait (d'où click, pas check)
+  const online = () => page.locator('ul.devices li', { hasText: 'Claude Code' }).getByRole('checkbox', { name: /Jaquettes en ligne/ });
+  await online().click();
+  await expect(page.getByText('Fonctions enregistrées.')).toBeVisible();
+  await expect(online()).toBeChecked();
+  await page.reload();
+  await expect(online()).toBeChecked();
+  // « Seulement les sites connus » : coché ; décoché, un avertissement s'affiche ; recoché, il part
+  const known = () => page.locator('ul.devices li', { hasText: 'Claude Code' }).getByRole('checkbox', { name: /Seulement les sites connus/ });
+  await expect(known()).toBeChecked();
+  await known().click();
+  await expect(known()).not.toBeChecked();
+  await expect(page.locator('ul.devices li', { hasText: 'Claude Code' }).getByRole('note')).toContainText('n’importe quel site');
+  await known().click();
+  await expect(known()).toBeChecked();
+  await expect(page.locator('ul.devices li', { hasText: 'Claude Code' }).getByRole('note')).toHaveCount(0);
+  await online().click();
+  await expect(online()).not.toBeChecked();
+  await expect(known()).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
 test('admin sur téléphone : rien ne déborde @téléphone', async ({ page }) => {
   await login(page, 'admin');
   for (const path of ['/admin', '/admin/taches', '/admin/doublons', '/admin/journal', '/admin/lots', '/albums/1/corriger', '/artistes/1/corriger']) {

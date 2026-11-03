@@ -20,6 +20,27 @@ export const FIELD = /** @type {Record<string, string>} */ (labels(() => ({
   title: tr('Titre'), year: tr('Année'), albumArtist: tr('Artiste de l’album'), isCompilation: tr('Compilation'), genreIds: tr('Genres'),
   coverImageHash: tr('Jaquette'), artistCredit: tr('Artiste'), discNumber: tr('Disque'), trackNumber: tr('Numéro'), bpm: tr('BPM'), key: tr('Clé'), albumId: tr('Album'),
   name: tr('Nom'), sortName: tr('Nom de tri'), mergedInto: tr('Fusionné dans'), genreId: tr('Genre'),
+  kind: tr('Type'), removed: tr('Retiré'),
+})));
+
+/** Fonctions d'un jeton d'agent (IA-07) : libellé et description, dans l'ordre du serveur. */
+export const CAPABILITY = /** @type {Record<string, [string, string]>} */ (labels(() => ({
+  'library.read': [tr('Lire la bibliothèque'), tr('Albums, pistes, artistes, genres, recherche ; corrections et propositions déjà faites.')],
+  'library.analysis': [tr('Analyser la bibliothèque'), tr('Doublons, mêmes enregistrements, fichiers abîmés, valeurs de tags, artistes écrits de plusieurs façons, albums en double, artistes lus dans les titres.')],
+  'admin.read': [tr('Voir le dépôt et les erreurs'), tr('Dossier de dépôt et erreurs des tâches de fond : montre des chemins de fichiers.')],
+  'propose.tags': [tr('Proposer des corrections de tags'), tr('Titres, artistes, années, genres, numéros, BPM et clé.')],
+  'propose.structure': [tr('Proposer des changements de structure'), tr('Fusions d’artistes et d’albums, albums retirés, type d’album, pistes déplacées.')],
+  'propose.cover.library': [tr('Proposer une jaquette connue'), tr('Une image déjà présente dans la bibliothèque.')],
+  'cover.online': [tr('Jaquettes en ligne'), tr('Chercher et télécharger des jaquettes sur iTunes, Deezer et Cover Art Archive (si le serveur l’autorise).')],
+  'cover.anyhost': [tr('Jaquettes de n’importe quel site'), tr('Accepter une jaquette proposée par un lien vers n’importe quel site https.')],
+})));
+
+/** Risque signalé à côté d'une fonction. */
+export const CAPABILITY_RISK = /** @type {Record<string, string>} */ (labels(() => ({
+  paths: tr('voit des chemins de fichiers'),
+  structure: tr('changements lourds'),
+  internet: tr('le serveur se connecte à Internet ; l’IA lit des tags qui peuvent être trompeurs'),
+  anyhost: tr('vers n’importe quel site'),
 })));
 
 /** Actions du journal d'audit. */
@@ -33,7 +54,7 @@ export const ACTION = /** @type {Record<string, string>} */ (labels(() => ({
   'job.create': tr('Tâche demandée'), 'job_error.resolve': tr('Erreurs marquées comme résolues'), 'album.create': tr('Album séparé'), 'album.merge': tr('Albums fusionnés'),
   'artist.update': tr('Artiste corrigé'), 'artist.merge': tr('Artistes fusionnés'), 'change_set.create': tr('Lot proposé'), 'history.clear': tr('Historique d’écoute effacé'),
   'change_set.apply': tr('Lot appliqué'), 'change_set.reject': tr('Lot refusé'), 'change_set.revert': tr('Lot annulé'),
-  'library.dedup': tr('MP3 en double retirés'),
+  'library.dedup': tr('MP3 en double retirés'), 'token.capabilities': tr('Fonctions d’un agent modifiées'),
 })));
 
 /** @param {string | null | undefined} iso */
@@ -70,7 +91,9 @@ export function formatValue(field, value, genres) {
   if (field === 'albumId' && typeof value === 'number') return tr('album #{id}', { id: value });
   if (field === 'mergedInto' && typeof value === 'number') return tr('artiste #{id}', { id: value });
   if (typeof value === 'boolean') return value ? tr('oui') : tr('non');
-  if (field === 'coverImageHash') return String(value).slice(0, 10) + '…';
+  // Jaquette : l'image elle-même, pour juger une proposition avant de l'appliquer
+  if (field === 'coverImageHash') return <img className="cover-preview" src={`/api/v2/images/${String(value)}?size=s`} alt={tr('Jaquette')} loading="lazy" />;
+  if (field === 'kind') return value === 'loose' ? tr('pistes en vrac') : tr('album');
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }

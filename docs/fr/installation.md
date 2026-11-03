@@ -83,7 +83,7 @@ La collation rend les recherches insensibles à la casse et aux accents.
 
 ```bash
 git clone https://github.com/wootou/rengaine.git /var/www/rengaine
-git -C /var/www/rengaine checkout v1.0.3   # une version publiée (la branche main continue d'avancer)
+git -C /var/www/rengaine checkout v1.0.4   # une version publiée (la branche main continue d'avancer)
 install -d -m 750 -o root -g www-data /etc/rengaine
 install -m 640 -o root -g www-data /var/www/rengaine/config/rengaine.ini.example /etc/rengaine/rengaine.ini
 editor /etc/rengaine/rengaine.ini          # voir configuration.md
@@ -131,6 +131,7 @@ Lancez un premier scan à la main pour le voir tourner : `$M index`, puis `$M li
 
 ```bash
 $M user:create vous@example.org "Votre nom" --role admin     # demande le mot de passe
+$M user:create - "Claude" --role agent                         # facultatif : un agent d'IA, sans e-mail ; affiche son jeton
 ```
 
 Ouvrez le site, connectez-vous, et gérez les autres comptes dans **Admin > Comptes**.

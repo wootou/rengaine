@@ -18,4 +18,6 @@ L'essentiel :
 - Les documents versionnés (file d'attente, réglages) utilisent `ETag` / `If-Match` ; un conflit renvoie le
   document actuel.
 - Les flux acceptent les plages HTTP ; les images ont un cache permanent (adressées par leur contenu).
-- `POST /mcp` est le point d'accès Model Context Protocol pour les agents d'IA (voir [IA](ai.md)).
+- `POST /mcp` est le point d'accès Model Context Protocol pour les agents d'IA (voir [IA](ai.md)) ; seuls les
+  jetons d'agent y sont admis. Un jeton d'agent ne peut appeler que les fonctions cochées pour lui, par le MCP
+  comme directement sur l'API (sinon `403 capability_disabled` ; il lit sa liste dans `GET /me`).

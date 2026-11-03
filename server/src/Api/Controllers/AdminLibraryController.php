@@ -9,18 +9,22 @@ namespace Musique\Api\Controllers;
 
 use Musique\Api\Context;
 use Musique\Api\Format;
+use Musique\Auth\Capabilities;
 use Musique\Catalog\Collections;
 use Musique\Catalog\Serializer;
 use Musique\Http\ApiError;
 use Musique\Http\Input;
 use Musique\Http\Response;
 use Musique\Library\AlbumBuilder;
+use Musique\Library\AlbumDuplicates;
 use Musique\Library\ChangeRules;
 use Musique\Library\ChangeSets;
 use Musique\Library\Corrections;
+use Musique\Library\CoverSearch;
 use Musique\Library\Genres;
 use Musique\Library\Images;
 use Musique\Library\Lookalikes;
+use Musique\Library\TitleCredits;
 
 final class AdminLibraryController
 {
@@ -374,6 +378,76 @@ final class AdminLibraryController
         return Response::json(['items' => array_slice($pairs, $offset, $limit), 'total' => count($pairs), 'limit' => $limit, 'offset' => $offset]);
     }
 
+    /** Recherche de jaquettes en ligne : activée dans la configuration, et plafonnée par compte. */
+    private function coverSearch(): CoverSearch
+    {
+        if (!CoverSearch::enabled($this->ctx->config)) {
+            throw new ApiError(503, 'cover_search_disabled', 'Recherche de jaquettes en ligne désactivée sur ce serveur');
+        }
+        $this->ctx->limiter->hit('cover', (string) $this->ctx->user()->userId, $this->ctx->config->int('limites', 'jaquettes_par_10min', 60), 600);
+        // Jeton d'agent avec « n'importe quel site » : la liste des sites connus n'est plus appliquée (le reste l'est)
+        return CoverSearch::fromConfig($this->ctx->config, Capabilities::anyCoverHost($this->ctx->user()));
+    }
+
+    /** Jaquettes candidates pour un album (artiste et titre de l'album, ou ceux passés en paramètres). */
+    public function listCoverCandidates(array $params): Response
+    {
+        $id = (int) $params['id'];
+        $album = $this->ctx->db->one('SELECT a.title, ar.name AS artist FROM albums a LEFT JOIN artists ar ON ar.id = a.album_artist_id WHERE a.id = ? AND a.missing_since IS NULL', [$id])
+            ?? throw ApiError::notFound('Album introuvable');
+        $r = $this->ctx->request;
+        $artist = $r->queryString('artist') ?? (string) ($album['artist'] ?? '');
+        $title = $r->queryString('title') ?? (string) $album['title'];
+        return Response::json(['artist' => $artist, 'title' => $title] + $this->coverSearch()->candidates($artist, $title));
+    }
+
+    /**
+     * Jaquette proposée par un lien (album.coverUrl) : téléchargée et vérifiée dès la proposition, gardée
+     * comme image connue ; le changement devient coverImageHash, que l'admin voit avant de valider.
+     * @return array{0: string, 1: int, 2: string, 3: string, 4: ?string}
+     */
+    private function coverFromUrl(array $c, int $i, ?string $reason): array
+    {
+        $p = "changes[$i].";
+        $in = new Input($c, $p);
+        $id = (int) $in->int('entityId', 1);
+        if (!$this->rules()->exists('album', $id)) {
+            throw ApiError::invalid($p . 'entityId', 'Élément introuvable');
+        }
+        $url = (string) $in->string('value', 1, 2000);
+        $search = $this->coverSearch();
+        try {
+            $bytes = $search->image($url);
+        } catch (ApiError $e) {
+            if ($search->lastError !== null) {
+                // Détail (code HTTP, adresse refusée…) au journal seulement : l'IA ne reçoit qu'un message unique
+                $this->ctx->logger->info('Jaquette proposée refusée', ['host' => parse_url($url, PHP_URL_HOST), 'detail' => $search->lastError]);
+            }
+            throw ApiError::invalid($p . 'value', $e->getMessage());
+        }
+        $imageId = (new Images($this->ctx->db, $this->ctx->storage(), $this->ctx->cacheDir()))->fromUpload($bytes)
+            ?? throw ApiError::invalid($p . 'value', 'Image illisible');
+        $hash = strtolower((string) $this->ctx->db->value('SELECT HEX(sha256) FROM images WHERE id = ?', [$imageId]));
+        return ['album', $id, 'cover', $hash, $reason ?? 'Jaquette : ' . (parse_url($url, PHP_URL_HOST) ?: '')];
+    }
+
+    /** Albums présents en deux exemplaires (deux dossiers), à vérifier avant d'en retirer un. */
+    public function listDuplicateAlbums(array $params): Response
+    {
+        [$limit, $offset] = $this->ctx->request->page();
+        $pairs = (new AlbumDuplicates($this->ctx->db))->pairs();
+        return Response::json(['items' => array_slice($pairs, $offset, $limit), 'total' => count($pairs), 'limit' => $limit, 'offset' => $offset]);
+    }
+
+    /** Artiste lu dans le titre des pistes sans artiste (« Queen - Bohemian Rhapsody »). */
+    public function listTitleCreditSuggestions(array $params): Response
+    {
+        $r = $this->ctx->request;
+        [$limit, $offset] = $r->page();
+        $all = (new TitleCredits($this->ctx->db))->suggestions($r->queryInt('album', null, 1));
+        return Response::json(['items' => array_slice($all, $offset, $limit), 'total' => count($all), 'limit' => $limit, 'offset' => $offset]);
+    }
+
     public function updateArtist(array $params): Response
     {
         $id = (int) $params['id'];
@@ -491,20 +565,41 @@ final class AdminLibraryController
         $title = (string) $in->text('title', 1, 255);
         $description = $in->string('description', 0, 10000, false, true);
         $changes = $in->raw()['changes'] ?? null;
-        if (!is_array($changes) || !array_is_list($changes) || $changes === [] || count($changes) > 2000) {
-            throw ApiError::invalid('changes', 'Champ « changes » : liste de 1 à 2000 changements');
+        if (!is_array($changes) || !array_is_list($changes) || $changes === [] || count($changes) > 5000) {
+            throw ApiError::invalid('changes', 'Champ « changes » : liste de 1 à 5000 changements');
         }
         $checked = [];
-        foreach ($changes as $i => $c) {
-            if (!is_array($c) || array_is_list($c)) {
-                throw ApiError::invalid("changes[$i]", 'Objet attendu');
+        $downloaded = [];
+        // Lot refusé à la vérification : les jaquettes déjà téléchargées pour lui ne restent pas en base
+        $purge = function () use (&$downloaded): void {
+            (new Images($this->ctx->db, $this->ctx->storage(), $this->ctx->cacheDir()))->purgeUnusedUploads($downloaded);
+        };
+        try {
+            foreach ($changes as $i => $c) {
+                if (!is_array($c) || array_is_list($c)) {
+                    throw ApiError::invalid("changes[$i]", 'Objet attendu');
+                }
+                $reason = (new Input($c, "changes[$i]."))->string('reason', 0, 1000, false, true);
+                // Agent : chaque changement demande sa propre capacité (IA-07) ; un champ non déclaré est refusé
+                $missing = Capabilities::missingForChange($this->ctx->user(), is_string($c['entityType'] ?? null) ? $c['entityType'] : '', is_string($c['field'] ?? null) ? $c['field'] : '');
+                if ($missing !== null) {
+                    $e = Capabilities::denied($missing);
+                    throw new ApiError(403, 'capability_disabled', $e->getMessage(), ($missing === 'field' ? [] : ['capability' => $missing]) + ['field' => "changes[$i].field"]);
+                }
+                if (($c['entityType'] ?? null) === 'album' && ($c['field'] ?? null) === 'coverUrl') {
+                    $checked[] = $cover = $this->coverFromUrl($c, $i, $reason === '' ? null : $reason);
+                    $downloaded[] = $cover[3];
+                    continue;
+                }
+                if (($c['entityType'] ?? null) === 'album' && ($c['field'] ?? null) === 'mergedInto') {
+                    array_push($checked, ...$this->albumMergeChanges($c, $i, $reason === '' ? null : $reason));
+                    continue;
+                }
+                $checked[] = [...$this->checkChange($c, $i), $reason === '' ? null : $reason];
             }
-            $reason = (new Input($c, "changes[$i]."))->string('reason', 0, 1000, false, true);
-            if (($c['entityType'] ?? null) === 'album' && ($c['field'] ?? null) === 'mergedInto') {
-                array_push($checked, ...$this->albumMergeChanges($c, $i, $reason === '' ? null : $reason));
-                continue;
-            }
-            $checked[] = [...$this->checkChange($c, $i), $reason === '' ? null : $reason];
+        } catch (\Throwable $e) {
+            $purge();
+            throw $e;
         }
         $uid = $this->ctx->user()->userId;
         $corrections = $this->corrections();
@@ -568,6 +663,12 @@ final class AdminLibraryController
             }
             return $status;
         });
+        if ($action !== 'apply') {
+            // Jaquettes proposées par un lien et refusées (ou annulées) : rien ne doit rester en base
+            $hashes = array_map(static fn ($v) => (string) json_decode((string) $v, true),
+                array_column($this->ctx->db->all("SELECT value FROM corrections WHERE change_set_id = ? AND field = 'cover' AND value IS NOT NULL", [$id]), 'value'));
+            (new Images($this->ctx->db, $this->ctx->storage(), $this->ctx->cacheDir()))->purgeUnusedUploads(array_values(array_filter($hashes)));
+        }
         $after = ['apply' => 'applied', 'reject' => 'rejected', 'revert' => 'reverted'][$action];
         $this->ctx->audit("change_set.$action", 'change_set', $id, ['status' => $before], ['status' => $after]);
         return Response::json($sets->out($id));
@@ -591,7 +692,7 @@ final class AdminLibraryController
         ));
         if ($this->ctx->request->queryBool('compact') === true) {
             // Pour un modèle d'IA : l'essentiel de chaque piste, les tags bruts des fichiers
-            $album['tracks'] = array_map(static fn ($t) => array_intersect_key($t, array_flip(['id', 'discNumber', 'trackNumber', 'title', 'artistCredit', 'durationMs'])), $album['tracks']);
+            $album['tracks'] = array_map(static fn ($t) => array_intersect_key($t, array_flip(['id', 'discNumber', 'trackNumber', 'title', 'artistCredit', 'artistCreditSource', 'durationMs'])), $album['tracks']);
             $album['files'] = array_map(static fn ($f) => ['trackId' => $f['trackId'], 'storageKey' => $f['storageKey'], 'tags' => $f['tags']], $album['files']);
             unset($album['loudness'], $album['collections']);
             $album['isCompilation'] = (bool) ($album['isCompilation'] ?? false);

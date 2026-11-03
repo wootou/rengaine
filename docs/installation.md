@@ -82,7 +82,7 @@ The collation makes searches insensitive to case and accents.
 
 ```bash
 git clone https://github.com/wootou/rengaine.git /var/www/rengaine
-git -C /var/www/rengaine checkout v1.0.3   # a released version (the main branch moves on)
+git -C /var/www/rengaine checkout v1.0.4   # a released version (the main branch moves on)
 install -d -m 750 -o root -g www-data /etc/rengaine
 install -m 640 -o root -g www-data /var/www/rengaine/config/rengaine.ini.example /etc/rengaine/rengaine.ini
 editor /etc/rengaine/rengaine.ini          # see configuration.md
@@ -129,6 +129,7 @@ Run a first scan by hand to see it work: `$M index`, then `$M library:stats`.
 
 ```bash
 $M user:create you@example.org "Your name" --role admin     # asks for the password
+$M user:create - "Claude" --role agent                       # optional: an AI agent, no email; prints its token
 ```
 
 Open the site, sign in, and manage the other accounts from **Admin > Accounts**.

@@ -1080,3 +1080,10 @@ details.ask-ai summary { cursor: pointer; min-height: 44px; display: flex; align
 .history-text small, .history-meta { color: var(--muted); }
 .history-meta { flex: none; text-align: right; }
 @media (max-width: 480px) { .history-device { display: none; } }
+.cover-preview { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; vertical-align: middle; }
+.capabilities { border: 1px solid var(--line, #3a332d); border-radius: 8px; padding: .5rem .75rem; margin: .5rem 0; width: 100%; }
+.capabilities label.check { display: block; margin: .35rem 0; }
+.capabilities .pill { margin-left: .4rem; }
+.pill.risk-internet, .pill.risk-structure, .pill.risk-paths { background: #8a3b12; color: #fff; }
+.capabilities .sub-capability { margin: 0 0 .35rem 1.6rem; }
+.capabilities .warning { margin: .25rem 0 0; padding: .4rem .6rem; border-left: 3px solid #c2410c; background: rgb(194 65 12 / .12); font-size: .9em; }

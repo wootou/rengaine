@@ -24,13 +24,19 @@ final class Text
             : mb_convert_encoding($m[2], 'UTF-8', 'Windows-1252'), $s);
     }
 
+    /** Entités HTML laissées dans un tag (« Simon &amp; Garfunkel ») : décodées. */
+    public static function entities(string $s): string
+    {
+        return preg_match('/&(?:#\d+|#x[0-9a-f]+|[a-z]+);/i', $s) === 1 ? html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8') : $s;
+    }
+
     /** Nettoie une valeur affichée : UTF-8 valide, espaces simples, sans caractères de contrôle. */
     public static function clean(?string $s): ?string
     {
         if ($s === null) {
             return null;
         }
-        $s = self::utf8($s);
+        $s = self::entities(self::utf8($s));
         $s = preg_replace('/[\x00-\x1f\x7f]+/u', ' ', $s) ?? $s;
         $s = trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
         return $s === '' ? null : $s;

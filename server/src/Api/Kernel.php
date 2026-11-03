@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace Musique\Api;
 
+use Musique\Auth\Capabilities;
 use Musique\Auth\Tokens;
 use Musique\Config;
 use Musique\Db\Database;
@@ -28,9 +29,9 @@ final class Kernel
 {
     public const BASE = '/api/v2';
     /** Version du contrat d'API (api/openapi.yaml). */
-    public const VERSION = '2.29.0';
+    public const VERSION = '2.31.0';
     /** Version de Rengaine (CHANGELOG) : « -dev » entre deux versions publiées. */
-    public const RELEASE = '1.0.3';
+    public const RELEASE = '1.0.4';
 
     private Router $router;
     private ?Database $db = null;
@@ -251,6 +252,11 @@ final class Kernel
         $roles = self::roles($options);
         if ($roles !== null && !in_array($principal->role, $roles, true)) {
             throw ApiError::forbidden('Votre rôle ne permet pas cette action');
+        }
+        // Agent : la fonction doit être cochée pour ce jeton (IA-07), qu'il passe par le MCP ou non
+        // (une route publique reste ouverte à tous, jeton présenté ou non)
+        if ($roles !== null && ($missing = Capabilities::missing($principal, $options)) !== null) {
+            throw Capabilities::denied($missing);
         }
         $ctx->limiter->hit('user', (string) $principal->userId, $this->config->int('limites', 'requetes_par_minute_compte', 2400), 60);
         $tokens->touch($principal, $request->ip, $request->header('user-agent'));

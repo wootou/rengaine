@@ -63,11 +63,13 @@ final class McpApiTest extends ApiCase
         $this->assertSame(405, $this->as($agent, 'GET', '/api/v2/mcp')->status);
     }
 
-    public function testAccesReserveAuxJetonsAgentEtAdmin(): void
+    public function testAccesReserveAuxJetonsAgent(): void
     {
         $this->assertError($this->call('POST', '/api/v2/mcp', ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'ping']), 401, 'unauthorized', 'mcp');
         $this->assertError($this->rpc($this->token('user'), 'ping'), 403, 'forbidden', 'mcp');
-        $this->assertSame(200, $this->rpc($this->token('admin'), 'ping')->status);
+        // Depuis 2.31.0 : un jeton admin non plus (l'admin crée un jeton d'agent dédié)
+        $this->assertError($this->rpc($this->token('admin'), 'ping'), 403, 'forbidden', 'mcp');
+        $this->assertSame(200, $this->rpc($this->token('agent'), 'ping')->status);
 
         // Session web d'un admin : refusée même avec le jeton anti-CSRF
         $r = $this->call('POST', '/api/v2/auth/login', ['email' => 'admin@test.fr', 'password' => self::PASSWORD, 'client' => 'web']);
@@ -79,7 +81,8 @@ final class McpApiTest extends ApiCase
     {
         $tools = $this->rpc($this->token('agent'), 'tools/list')->data()['result']['tools'];
         $names = array_column($tools, 'name');
-        $this->assertSame(array_keys(McpTools::all()), $names);
+        // Le jeton de test a tout sauf les pochettes en ligne : find_cover n'est pas montré
+        $this->assertSame(array_values(array_diff(array_keys(McpTools::all()), ['find_cover'])), $names);
         foreach ($tools as $t) {
             $this->assertSame('object', $t['inputSchema']['type'], $t['name']);
             $this->assertTrue($t['description'] !== '' && $t['title'] !== '', $t['name']);
@@ -138,7 +141,7 @@ final class McpApiTest extends ApiCase
             'list_job_errors' => ['open' => false], 'list_genre_tags' => ['mapped' => true],
         ];
         foreach (McpTools::all() as $name => $tool) {
-            if (($tool['write'] ?? false) || in_array($name, ['get_duplicates', 'get_change_set'], true)) {
+            if (($tool['write'] ?? false) || in_array($name, ['get_duplicates', 'get_change_set', 'find_cover'], true)) {
                 continue;
             }
             [$data, $error] = $this->tool($name, $args[$name] ?? []);
@@ -157,6 +160,14 @@ final class McpApiTest extends ApiCase
         [$data, $error] = $this->tool('get_album', ['id' => $album, 'compact' => true]);
         $this->assertSame(false, $error);
         $this->assertSame(false, isset($data->tracks[0]->formats), 'forme réduite');
+
+        // Jaquettes en ligne : désactivées par défaut, refus clair (pas de téléchargement)
+        [$text, $error] = $this->tool('find_cover', ['id' => $album]);
+        $this->assertTrue($error && str_contains($text, 'désactivée'), $text);
+        [$text, $error] = $this->tool('propose_changes', ['title' => 'x', 'changes' => [['entityType' => 'album', 'entityId' => $album, 'field' => 'coverUrl', 'value' => 'https://is1-ssl.mzstatic.com/a.jpg']]]);
+        $this->assertTrue($error && str_contains($text, 'désactivée'), $text);
+        [$data] = $this->tool('list_albums', ['missing' => ['cover']]);
+        $this->assertSame([], Contract::validate($data, Contract::responseSchema('listAlbums', 200)));
 
         // Tags bruts toujours en objet, même vides ou à clés numériques (une liste faisait planter un client)
         $files = $this->db->all('SELECT tf.id, tf.tags_raw FROM track_files tf JOIN tracks t ON t.id = tf.track_id WHERE t.album_id = ? ORDER BY tf.id LIMIT 2', [$album]);

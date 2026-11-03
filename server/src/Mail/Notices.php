@@ -40,7 +40,7 @@ final class Notices
             return array_values(array_filter(array_map('trim', explode(',', $this->config->string('smtp', 'admin'))), [Message::class, 'validAddress']));
         }
         return array_values(array_filter(array_column(
-            $this->db->all("SELECT email FROM users WHERE role = 'admin' AND status = 'active' ORDER BY id"), 'email'
+            $this->db->all("SELECT email FROM users WHERE role = 'admin' AND status = 'active' AND email IS NOT NULL ORDER BY id"), 'email'
         ), [Message::class, 'validAddress']));
     }
 

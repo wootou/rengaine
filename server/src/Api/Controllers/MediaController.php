@@ -246,7 +246,7 @@ final class MediaController
         if ($size !== 'original') {
             $thumb = "$cache/thumbs/" . self::SIZES[$size] . '/' . substr($hex, 0, 2) . "/$hex.jpg";
             if (!is_file($thumb)) {
-                $this->makeThumbnail($this->original($img, $hex, $cache), $thumb, self::SIZES[$size]);
+                $this->makeThumbnail($this->original($img, $hex, $cache), $thumb, self::SIZES[$size], (string) $img['mime_type']);
             }
             if (is_file($thumb)) {
                 return $this->imageResponse((string) file_get_contents($thumb), 'image/jpeg', $etag);
@@ -263,8 +263,17 @@ final class MediaController
             ?? throw ApiError::notFound('Image absente du stockage');
     }
 
-    private function makeThumbnail(string $bytes, string $target, int $px): void
+    /** Démuxeur imposé à ffmpeg selon le type enregistré : il ne devine rien d'une image venue d'ailleurs. */
+    private const IMAGE_DEMUXERS = ['image/jpeg' => 'jpeg_pipe', 'image/png' => 'png_pipe', 'image/webp' => 'webp_pipe',
+        'image/gif' => 'gif_pipe', 'image/bmp' => 'bmp_pipe'];
+
+    private function makeThumbnail(string $bytes, string $target, int $px, string $mime = ''): void
     {
+        $demuxer = self::IMAGE_DEMUXERS[strtolower($mime)] ?? null;
+        if ($demuxer === null) {
+            $this->ctx->logger->warning('Vignette impossible : type d’image inconnu', ['target' => basename($target), 'mime' => $mime]);
+            return;
+        }
         $dir = dirname($target);
         if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
             $this->ctx->logger->warning('Cache des vignettes inaccessible', ['dir' => $dir]);
@@ -274,7 +283,7 @@ final class MediaController
         $tmp = "$dir/." . bin2hex(random_bytes(6)) . '.jpg';
         try {
             file_put_contents($src, $bytes);
-            $proc = proc_open(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', $src, '-frames:v', '1',
+            $proc = proc_open(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-f', $demuxer, '-i', $src, '-frames:v', '1',
                 '-vf', "scale=w='min($px,iw)':h='min($px,ih)':force_original_aspect_ratio=decrease", '-q:v', '3', '-f', 'image2', $tmp],
                 [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']], $pipes);
             $err = is_resource($proc) ? stream_get_contents($pipes[2]) : 'ffmpeg ne démarre pas';

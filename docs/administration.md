@@ -10,7 +10,8 @@ form; **Admin > Server** shows it). Admins receive a mail, then approve or refus
 Requests can be closed, and the number of pending requests per network is limited.
 
 Roles: **user**, **admin**, and **agent** (an AI working on the library: it can read the catalogue and
-propose corrections, nothing else; it has no password, only tokens created by an admin). Suspend,
+propose corrections, nothing else; it has no password and needs no email, only tokens created by an admin,
+each with its own allowed functions, see [AI](ai.md)). Suspend,
 reactivate, change roles, see devices and revoke them from the account page. Suspending an account signs out
 all its devices and revokes its remote control links; reactivating it brings neither back.
 

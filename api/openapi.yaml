@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: API Rengaine
-  version: 2.29.0
+  version: 2.31.0
   summary: Bibliothèque musicale, lecture, comptes et administration.
   license:
     name: Usage privé
@@ -922,12 +922,13 @@ paths:
           in: query
           description: |
             Albums auxquels il manque l'une de ces informations (depuis 2.29.0) : `artist` (pas d'artiste de
-            l'album, hors compilations), `year`, `genre`. Plusieurs valeurs : il manque l'une ou l'autre.
+            l'album, hors compilations), `year`, `genre`, `cover` (sans jaquette, depuis 2.30.0). Plusieurs
+            valeurs : il manque l'une ou l'autre.
           style: form
           explode: false
           schema:
             type: array
-            items: {type: string, enum: [artist, year, genre]}
+            items: {type: string, enum: [artist, year, genre, cover]}
           examples:
             sansAnnee: {value: [year]}
         - name: sort
@@ -1032,6 +1033,24 @@ paths:
           in: query
           description: Pistes où l'artiste est principal ou invité
           schema: {type: integer}
+        - name: missing
+          in: query
+          description: |
+            Depuis 2.30.0 : pistes sans `artist` (aucun artiste connu, `artistCreditSource: none`) ou sans
+            `genre`. Plusieurs valeurs : l'une ou l'autre.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items: {type: string, enum: [artist, genre]}
+        - name: albumKind
+          in: query
+          description: Pistes des albums de ce type (depuis 2.30.0)
+          schema: {type: string, enum: [album, loose]}
+        - name: compilation
+          in: query
+          description: Pistes d'une compilation (`true`) ou non (`false`), depuis 2.30.0
+          schema: {type: boolean}
         - name: genre
           in: query
           description: Genres effectifs de la piste (les siens, sinon ceux de l'album)
@@ -1962,6 +1981,10 @@ paths:
               properties:
                 name: {$ref: "#/components/schemas/DeviceName"}
                 expiresAt: {type: [string, "null"], format: date-time}
+                capabilities:
+                  type: array
+                  description: Compte agent seulement (depuis 2.31.0) ; sans ce champ, les capacités par défaut
+                  items: {$ref: "#/components/schemas/Capability"}
       responses:
         "201":
           description: Jeton créé (affiché une seule fois)
@@ -1987,6 +2010,67 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      tags: [admin-comptes]
+      operationId: adminUpdateToken
+      summary: Cocher ou décocher les fonctions d'un jeton d'agent
+      description: |
+        Depuis 2.31.0. Remplace la liste des capacités ; effet dès la requête suivante (relue à chaque requête).
+        Noté dans le journal d'audit (avant, après). `409` pour un jeton qui n'est pas d'agent.
+      x-priority: P2
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [capabilities]
+              properties:
+                capabilities:
+                  type: array
+                  items: {$ref: "#/components/schemas/Capability"}
+      responses:
+        "200":
+          description: Capacités enregistrées
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokenId, capabilities]
+                properties:
+                  tokenId: {type: integer}
+                  capabilities:
+                    type: array
+                    items: {$ref: "#/components/schemas/Capability"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
+  /admin/capabilities:
+    get:
+      tags: [admin-comptes]
+      operationId: adminListCapabilities
+      summary: Fonctions qu'un jeton d'agent peut recevoir
+      description: Depuis 2.31.0. Dans l'ordre d'affichage ; libellés et descriptions sont dans l'interface.
+      x-priority: P2
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Catalogue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: "#/components/schemas/CapabilityInfo"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
   /admin/server-settings:
     get:
@@ -2146,6 +2230,38 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/ChangeSet"}
         "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/albums/{id}/cover-candidates:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListCoverCandidates
+      summary: Jaquettes trouvées en ligne pour un album
+      description: |
+        Depuis 2.30.0, si le serveur l'a activé (`[pochettes] recherche_en_ligne = 1`) ; sinon
+        `503 cover_search_disabled`. Cherche sur iTunes, Deezer et MusicBrainz / Cover Art Archive d'après
+        l'artiste et le titre de l'album (ou `artist` et `title`). Rien n'est téléchargé ni modifié : proposer
+        ensuite `coverUrl` dans un lot. Une source en panne est nommée dans `errors`. Plafonné par compte
+        (`[limites] jaquettes_par_10min`, 60).
+      x-priority: P3
+      x-roles: [admin, agent]
+      parameters:
+        - name: artist
+          in: query
+          schema: {type: string, maxLength: 200}
+        - name: title
+          in: query
+          schema: {type: string, maxLength: 200}
+      responses:
+        "200":
+          description: Candidats, les plus sûrs d'abord
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CoverCandidates"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -2391,6 +2507,58 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+
+  /admin/duplicate-albums:
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListDuplicateAlbums
+      summary: Albums présents dans deux dossiers (candidats au retrait)
+      description: |
+        Depuis 2.30.0. Paires d'albums au même titre (ou presque) et au même artiste, l'un des deux pouvant
+        n'avoir aucun artiste (copie sans tags). Les dossiers en vrac sont exclus. Rien n'est modifié : vérifier,
+        puis proposer `removed` pour la copie en trop. Les MP3 doublés par un FLAC dans un même album sont une
+        autre liste (`/admin/duplicates`).
+      x-priority: P3
+      x-roles: [admin, agent]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paires
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AlbumCopyPairPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /admin/title-credit-suggestions:
+    get:
+      tags: [admin-bibliotheque]
+      operationId: adminListTitleCreditSuggestions
+      summary: Artiste lu dans le titre des pistes sans artiste
+      description: |
+        Depuis 2.30.0. Pour les pistes sans aucun artiste connu dont le titre est « Artiste - Titre »
+        (séparateurs « - », « – », « — », « • », « | ») : titre et artiste proposés, nettoyés des mentions de
+        vidéo, des débits, d'un numéro de piste et des entités HTML ; « Titre - Artiste » repéré d'après les
+        artistes connus (`inverted`). Rien n'est modifié : proposer ensuite `title` et `artistCredit`.
+      x-priority: P3
+      x-roles: [admin, agent]
+      parameters:
+        - name: album
+          in: query
+          description: Seulement les pistes de cet album
+          schema: {type: integer}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TitleCreditSuggestionPage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
   /admin/artist-lookalikes:
     get:
@@ -2687,13 +2855,16 @@ paths:
 
         Une erreur de l'outil (identifiant inconnu, valeur refusée) revient dans le résultat avec
         `isError: true` et le message dans la langue du serveur ; une erreur de protocole dans `error`.
-        Jeton obligatoire (`Authorization: Bearer`, jeton d'un compte agent ou admin) : une session
-        web reçoit `403`.
+        Réservé aux jetons d'agent (depuis 2.31.0) : un jeton admin ou une session web reçoit `403`. L'admin
+        crée un compte agent (sans e-mail possible) et lui donne un jeton, dont il coche les fonctions
+        (`capabilities`) : `tools/list` ne montre que les outils permis, un outil désactivé répond par une erreur
+        qui nomme la capacité. Le même contrôle vaut pour un appel direct à l'API avec ce jeton
+        (`403 capability_disabled`).
 
         Avec Claude Code : `claude mcp add --transport http rengaine https://<serveur>/api/v2/mcp
         --header "Authorization: Bearer <jeton>"`.
       x-priority: P2
-      x-roles: [admin, agent]
+      x-roles: [agent]
       requestBody:
         required: true
         content:
@@ -3238,7 +3409,9 @@ components:
                 (en-tête `X-CSRF-Token` absent ou faux), `not_found`, `method_not_allowed`, `conflict`,
                 `version_conflict`, `precondition_required`, `rate_limited`, `range_not_satisfiable`,
                 `not_implemented`, `storage_unavailable`, `internal`, `player_offline` (aucun lecteur
-                allumé pour la télécommande), `realtime_unavailable` (hub temps réel absent ou injoignable).
+                allumé pour la télécommande), `realtime_unavailable` (hub temps réel absent ou injoignable),
+                `cover_search_disabled` (recherche de jaquettes en ligne désactivée, depuis 2.30.0),
+                `capability_disabled` (jeton d'agent : fonction non cochée, nommée dans `details.capability`, depuis 2.31.0).
                 Toute opération peut répondre `401`, `403 csrf_invalid` (session web), `429` et `503` avec
                 ce format, même si l'opération ne les liste pas.
               examples: [not_found]
@@ -3383,7 +3556,10 @@ components:
       required: [id, email, displayName, role]
       properties:
         id: {type: integer}
-        email: {type: string, format: email}
+        email:
+          type: [string, "null"]
+          format: email
+          description: "`null` seulement pour un compte agent sans adresse (depuis 2.31.0)"
         displayName: {type: string}
         role: {$ref: "#/components/schemas/Role"}
 
@@ -3539,6 +3715,10 @@ components:
         currentTokenId:
           type: integer
           description: Session ou jeton utilisé pour cette requête
+        capabilities:
+          type: array
+          description: Jeton d'agent seulement (depuis 2.31.0) ; les fonctions qu'il peut appeler, en lecture seule
+          items: {$ref: "#/components/schemas/Capability"}
 
     LoginRequest:
       type: object
@@ -3575,6 +3755,34 @@ components:
           description: Affiché une seule fois ; le serveur n'en garde que l'empreinte
         tokenId: {type: integer}
         user: {$ref: "#/components/schemas/User"}
+        capabilities:
+          type: array
+          description: Jeton d'agent seulement (depuis 2.31.0)
+          items: {$ref: "#/components/schemas/Capability"}
+
+    Capability:
+      type: string
+      enum: [library.read, library.analysis, admin.read, propose.tags, propose.structure, propose.cover.library, cover.online, cover.anyhost]
+      description: |
+        Fonction qu'un jeton d'agent peut appeler (IA-07, depuis 2.31.0). `library.read` : catalogue, albums vus par
+        l'admin, corrections et lots ; `library.analysis` : doublons, mêmes enregistrements, fichiers abîmés,
+        valeurs de tags, artistes sosies, albums en double, artistes lus dans les titres ; `admin.read` : dépôt et
+        erreurs des tâches (chemins de fichiers) ; `propose.tags` : changements de titres, artistes, années,
+        genres… ; `propose.structure` : fusions, `removed`, `kind`, déplacement de pistes ; `propose.cover.library` :
+        jaquette déjà connue (`coverImageHash`) ; `cover.online` : jaquettes cherchées et téléchargées en ligne ;
+        `cover.anyhost` (avec `cover.online`) : `coverUrl` de n'importe quel site https, et plus seulement d'iTunes, de
+        Deezer ou de Cover Art Archive ; les autres protections restent (adresses publiques, redirections revérifiées,
+        taille, délai, vraie image).
+
+    CapabilityInfo:
+      type: object
+      required: [id, default, risk]
+      properties:
+        id: {$ref: "#/components/schemas/Capability"}
+        default: {type: boolean, description: Cochée à la création d'un jeton}
+        risk:
+          type: [string, "null"]
+          description: "`paths` : voit des chemins de fichiers ; `structure` : changements lourds ; `internet` : le serveur se connecte à Internet ; `anyhost` : vers n'importe quel site ; `null` : aucun"
 
     RegisterRequest:
       type: object
@@ -3611,6 +3819,10 @@ components:
           oneOf:
             - $ref: "#/components/schemas/DateTime"
             - type: "null"
+        capabilities:
+          type: array
+          description: Jeton d'agent seulement (depuis 2.31.0), dans l'admin
+          items: {$ref: "#/components/schemas/Capability"}
         current:
           type: boolean
           description: C'est la session ou le jeton de cette requête
@@ -3636,7 +3848,10 @@ components:
       required: [id, email, displayName, role, status, createdAt]
       properties:
         id: {type: integer}
-        email: {type: string, format: email}
+        email:
+          type: [string, "null"]
+          format: email
+          description: "`null` pour un compte agent sans adresse"
         displayName: {type: string}
         role: {$ref: "#/components/schemas/Role"}
         status: {$ref: "#/components/schemas/UserStatus"}
@@ -3673,9 +3888,12 @@ components:
 
     AdminUserCreate:
       type: object
-      required: [email, displayName, role]
+      required: [displayName, role]
       properties:
-        email: {type: string, format: email}
+        email:
+          type: [string, "null"]
+          format: email
+          description: Obligatoire, sauf pour un compte agent (depuis 2.31.0)
         displayName: {$ref: "#/components/schemas/DisplayName"}
         role: {$ref: "#/components/schemas/Role"}
         password:
@@ -4318,13 +4536,15 @@ components:
 
     Track:
       type: object
-      required: [id, title, artistCredit, artists, album, genres, discNumber, trackNumber, durationMs, coverUrl, streamUrl, formats, playback, favorite, available]
+      required: [id, title, artistCredit, artistCreditSource, artists, album, genres, discNumber, trackNumber, durationMs, coverUrl, streamUrl, formats, playback, favorite, available]
       properties:
         id: {type: integer}
         title: {type: string}
         artistCredit:
           type: string
           description: Texte affiché (« Gorillaz feat. Kali Uchis »)
+        artistCreditSource:
+          $ref: "#/components/schemas/ArtistCreditSource"
         artists:
           type: array
           items:
@@ -4723,6 +4943,12 @@ components:
           description: |
             Depuis 2.29.0 : `album` traite le dossier comme un album (titre et artiste tirés des tags, même
             minoritaires), `loose` comme des pistes en vrac (titre = nom du dossier). Survit aux scans.
+        removed:
+          type: boolean
+          description: |
+            Depuis 2.30.0 : `true` retire l'album (une copie en double) : il est masqué avec ses pistes, ses
+            fichiers restent en place ; annuler la correction le fait revenir. Refusé pour un album créé dans
+            l'admin (sans dossier).
         genreIds:
           type: array
           description: Remplace la liste des genres de l'album
@@ -4808,6 +5034,7 @@ components:
                   trackNumber: {type: [integer, "null"]}
                   title: {type: string}
                   artistCredit: {type: string}
+                  artistCreditSource: {$ref: "#/components/schemas/ArtistCreditSource"}
                   durationMs: {type: integer}
             files:
               type: array
@@ -4821,6 +5048,98 @@ components:
             activeCorrections:
               type: array
               items: {$ref: "#/components/schemas/Correction"}
+
+    CoverCandidates:
+      type: object
+      required: [artist, title, items, errors]
+      properties:
+        artist: {type: string, description: Artiste cherché}
+        title: {type: string, description: Titre cherché}
+        items:
+          type: array
+          items:
+            type: object
+            required: [source, url, artist, title, size, exact]
+            properties:
+              source: {type: string, enum: [itunes, deezer, coverartarchive]}
+              url: {type: string, description: "Lien de l'image, à proposer tel quel dans `coverUrl`"}
+              artist: {type: string}
+              title: {type: string}
+              size: {type: [integer, "null"], description: Côté annoncé en pixels}
+              exact: {type: boolean, description: Artiste et titre identiques à ceux cherchés}
+        errors:
+          type: array
+          description: Sources qui n'ont pas répondu
+          items: {type: string}
+
+    ArtistCreditSource:
+      type: string
+      enum: [tag, artists, album, none]
+      description: |
+        D'où vient `artistCredit` (depuis 2.30.0) : `tag` (crédit lu dans les tags, ou corrigé), `artists`
+        (artistes principaux de la piste), `album` (artiste de l'album), `none` (aucun artiste connu :
+        `artistCredit` n'est alors qu'un libellé d'affichage, « Artiste inconnu »).
+
+    AlbumCopy:
+      type: object
+      required: [id, title, artistName, year, trackCount, durationMs, hasLossless, sourceDir]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        artistName: {type: [string, "null"]}
+        year: {type: [integer, "null"]}
+        trackCount: {type: integer}
+        durationMs: {type: integer}
+        hasLossless: {type: boolean}
+        sourceDir: {type: [string, "null"]}
+
+    AlbumCopyPairPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                required: [albums, reason, distance]
+                properties:
+                  albums:
+                    type: array
+                    minItems: 2
+                    maxItems: 2
+                    description: La copie la plus complète d'abord (plus de pistes, puis sans perte)
+                    items: {$ref: "#/components/schemas/AlbumCopy"}
+                  reason:
+                    type: string
+                    enum: [sameTitle, closeTitle]
+                    description: |
+                      `sameTitle` : même titre sans casse, accents, ponctuation ni mentions entre parenthèses ;
+                      `closeTitle` : une ou deux lettres d'écart. Même artiste, ou l'un des deux sans artiste.
+                  distance: {type: integer}
+
+    TitleCreditSuggestionPage:
+      allOf:
+        - $ref: "#/components/schemas/PageInfo"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                required: [trackId, albumId, title, suggestedTitle, suggestedArtist, inverted, knownArtist]
+                properties:
+                  trackId: {type: integer}
+                  albumId: {type: integer}
+                  title: {type: string, description: Titre actuel}
+                  suggestedTitle: {type: string}
+                  suggestedArtist: {type: string}
+                  inverted:
+                    type: boolean
+                    description: « Titre - Artiste » repéré (la partie droite est un artiste connu, pas la gauche)
+                  knownArtist: {type: boolean, description: L'artiste proposé existe déjà dans la bibliothèque}
 
     ArtistLookalike:
       type: object
@@ -4914,7 +5233,10 @@ components:
           type: string
           description: |
             Mêmes champs que `AlbumPatch` (sauf `collectionIds`), `TrackPatch` et `ArtistPatch`
-            (ex. `genreIds`, `year`, `albumArtist`, `title`, `albumId`, `kind`). En plus, pour un artiste,
+            (ex. `genreIds`, `year`, `albumArtist`, `title`, `albumId`, `kind`, `removed`). Pour un album,
+            `coverUrl` (depuis 2.30.0, si la recherche en ligne est activée) : lien HTTPS d'une jaquette d'iTunes,
+            de Deezer ou de Cover Art Archive ; elle est téléchargée et vérifiée tout de suite (JPEG, PNG ou WebP,
+            200 à 6000 px) et le lot reçoit un changement `coverImageHash` que l'admin voit avant de valider. En plus, pour un artiste,
             `mergedInto` (identifiant d'un autre artiste) le fusionne dans celui-ci. Pour un album,
             `mergedInto` (identifiant d'un autre album, depuis 2.29.0) devient un changement `albumId` par
             piste de l'album, comme `POST /admin/albums/{id}/merge` : le lot montre chaque piste. Pour rattacher
@@ -4939,7 +5261,7 @@ components:
         changes:
           type: array
           minItems: 1
-          maxItems: 2000
+          maxItems: 5000
           items: {$ref: "#/components/schemas/ChangeInput"}
 
     ChangeSet:

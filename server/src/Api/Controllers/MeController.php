@@ -34,6 +34,9 @@ final class MeController
     {
         $p = $this->ctx->user();
         $out = ['user' => $p->user(), 'currentTokenId' => $p->tokenId];
+        if ($p->capabilities !== null) {
+            $out['capabilities'] = $p->capabilities; // jeton d'agent : ce qu'il peut faire, en lecture seule (IA-07)
+        }
         if ($p->isWeb()) {
             $out['csrfToken'] = Tokens::csrfFor((string) $p->sessionSecret);
         }
@@ -50,7 +53,7 @@ final class MeController
         $name = (string) $in->text('displayName', 1, 100);
         $this->ctx->db->run('UPDATE users SET display_name = ? WHERE id = ?', [$name, $p->userId]);
         $this->ctx->audit('user.update', 'user', $p->userId, ['displayName' => $p->displayName], ['displayName' => $name]);
-        return Response::json(['id' => $p->userId, 'email' => $p->email, 'displayName' => $name, 'role' => $p->role]);
+        return Response::json(['id' => $p->userId, 'email' => $p->email === '' ? null : $p->email, 'displayName' => $name, 'role' => $p->role]);
     }
 
     public function changePassword(array $params): Response

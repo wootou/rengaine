@@ -64,6 +64,8 @@
     any compatible client can read the library and <strong>propose</strong> corrections, grouped in batches.</p>
     <p>Nothing changes until you apply a batch, and every batch can be reverted. With an API key, or a local
     model, the request can also start from the admin.</p>
+    <p>Each AI gets its own token, with one switch per function: read, analyse, propose tag fixes, propose merges,
+    look for covers online. The server enforces them on every request.</p>
   </div>
   {{shot:proposals|The proposals screen: a batch of changes proposed by an AI, to apply or reject}}
 </section>

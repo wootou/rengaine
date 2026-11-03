@@ -94,7 +94,7 @@ final class OrganizeAiTest extends ApiCase
         $this->assertSame(['cle-de-test', '2026-10-21', null], [$req[0]['key'], $req[0]['version'], $req[0]['beta']]);
         $b = $req[0]['body'];
         $this->assertSame(['claude-opus-5-5', ['effort' => 'high']], [$b['model'], $b['output_config']]);
-        $this->assertSame(count(\Musique\Api\McpTools::all()), count($b['tools']));
+        $this->assertSame(count(\Musique\Api\McpTools::all()) - 1, count($b['tools']), 'tous les outils sauf find_cover (pochettes en ligne)');
         $this->assertStringContainsString('propose_changes', $b['system']);
         $this->assertSame([['role' => 'user', 'content' => 'Corrige les années']], $b['messages']);
         $second = $req[1]['body']['messages'];

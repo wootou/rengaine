@@ -6,7 +6,7 @@
 
 🌐 **Site du projet et documentation : [rengaine.org](https://rengaine.org)**
 
-**Statut :** version 1.0.3 (voir [CHANGELOG.md](CHANGELOG.md)). **Appli Android :** code et APK sur [rengaine-android](https://github.com/wootou/rengaine-android/releases), version de test 1.0.0-rc.5.
+**Statut :** version 1.0.4 (voir [CHANGELOG.md](CHANGELOG.md)). **Appli Android :** code et APK sur [rengaine-android](https://github.com/wootou/rengaine-android/releases), version de test 1.0.0-rc.5.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://rengaine.org/images/fr/albums-dark.webp">
@@ -21,7 +21,7 @@
 - **Toute la famille.** Plusieurs comptes, synchronisés entre le lecteur web et l'appli Android.
 - **Télécommande partagée.** Un lien suffit pour qu'un invité pilote la musique depuis son téléphone.
 - **Une bibliothèque bien rangée.** Genres, corrections réversibles, doublons détectés.
-- **Assisté par l'IA, jamais piloté par elle.** Une IA propose des corrections, vous décidez.
+- **Assisté par l'IA, jamais piloté par elle.** Une IA propose des corrections, vous décidez, et vous choisissez ce que chaque IA a le droit de faire.
 - **Respectueux par conception.** Aucun traceur, vos données restent chez vous.
 
 ## Aperçu

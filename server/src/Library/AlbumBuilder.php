@@ -41,6 +41,13 @@ final class AlbumBuilder
         $imageRows = array_values(array_filter($rows, static fn ($r) => $r['kind'] === 'image'));
         $album = $this->db->one('SELECT * FROM albums WHERE dir_hash = UNHEX(SHA2(?, 256))', [$dir]);
 
+        // Album retiré par une correction (doublon) : masqué avec ses pistes, fichiers intacts ; annuler la
+        // correction le fait revenir à la reconstruction suivante.
+        if ($album !== null && ($this->corrections('album', [(int) $album['id']])[(int) $album['id']]['removed'] ?? false) === true) {
+            $this->db->run('UPDATE albums SET missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP(3)) WHERE id = ?', [$album['id']]);
+            $this->db->run('UPDATE tracks SET missing_since = COALESCE(missing_since, CURRENT_TIMESTAMP(3)) WHERE album_id = ?', [$album['id']]);
+            return ['album' => (int) $album['id'], 'created' => false, 'tracksNew' => 0, 'missing' => true];
+        }
         // Plus aucun fichier audio lisible : l'album est masqué, ses favoris et son historique restent.
         if ($files === []) {
             if ($album !== null) {
@@ -52,6 +59,12 @@ final class AlbumBuilder
 
         foreach ($files as &$f) {
             $f['tags'] = json_decode((string) $f['tags_raw'], true) ?: [];
+            // Tags lus avant le décodage des entités HTML (« &amp; ») : décodés ici, sans relire le fichier
+            foreach ($f['tags'] as $k => $v) {
+                if (is_string($v)) {
+                    $f['tags'][$k] = Text::entities($v);
+                }
+            }
         }
         unset($f);
 

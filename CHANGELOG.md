@@ -3,6 +3,47 @@
 All notable changes are listed here. The API contract has its own version (`info.version` in
 `api/openapi.yaml`, reported by `GET /api/v2/server`).
 
+## 1.0.4 (2026-11-03)
+
+Upgrading from 1.0.3: database migration 0020 (`rengaine db:migrate`). Rebuild
+the web player. Run `rengaine index --force` once so that titles stored with HTML entities (`&amp;`) are
+decoded (it reads every file again: long on a large library, run it at a quiet time). Covers found online stay off unless `[pochettes] recherche_en_ligne = 1` is set.
+
+**Breaking change for MCP clients:** the MCP endpoint (`/api/v2/mcp`) now only accepts **agent** tokens. A
+client that connected with an admin token gets `403`: before upgrading, create an agent account in
+**Admin > Accounts** (no email needed), give it a token and use that one.
+
+- AI permissions per function (API contract 2.31.0): each agent token has one switch per function (read the
+  library, analyse it, see the inbox and errors, propose tag corrections, propose structural changes,
+  propose a known cover, covers found online, and under it "known sites only", ticked by default: unticked,
+  with a warning, a proposed cover may come from any https site while every other check stays), set in
+  **Admin > Accounts** and applied at the next request.
+  The server checks them on every request made with the token, through MCP or directly on the API
+  (`403 capability_disabled`); a disabled tool is not listed. **Existing agent tokens keep what they could
+  do (everything except covers found online), including "see the inbox and errors" and "structural changes",
+  which are off for new tokens: check their switches after upgrading.** A proposed change whose field is not
+  declared for agents is refused. An agent token stops working if its account is given another role. `PATCH /admin/tokens/{id}`, `GET /admin/capabilities`; an agent
+  reads its own in `GET /me`. Changes are in the audit log.
+- An agent account no longer needs an email address (`rengaine user:create - "<name>" --role agent` on the
+  command line). `email` can be `null` for such an account.
+
+- Admin API and MCP: the artist lookalikes list (`GET /admin/artist-lookalikes`, `list_artist_lookalikes`)
+  failed with an error 500 when an artist's name is made only of digits ("1975").
+- After a second tidy-up by an AI (API contract 2.30.0):
+  - tracks tell where their artist credit comes from (`artistCreditSource`: tag, artists, album, none); a track
+    with no known artist was shown as "Unknown artist" with nothing to tell it from a real tag;
+  - `GET /tracks` filters: `missing=artist,genre`, `albumKind`, `compilation`;
+  - `GET /admin/duplicate-albums` and the MCP tool `list_duplicate_albums`: albums present in two folders;
+  - a correction can remove an album (`removed`, for a duplicate copy): hidden with its tracks, files left in
+    place, back when the correction is reverted;
+  - `GET /admin/title-credit-suggestions` and `suggest_credits_from_titles`: artist and title read from
+    "Artist - Title" track titles, cleaned, with swapped ones detected;
+  - covers found online (off by default, `[pochettes] recherche_en_ligne = 1`): candidates from iTunes, Deezer
+    and Cover Art Archive (`find_cover`), and a cover proposed by its link (`coverUrl`), downloaded and
+    checked when proposed, shown in Admin > Proposals; `GET /albums?missing=cover`;
+  - HTML entities left in tags (`&amp;`) are decoded;
+  - a proposal batch can hold up to 5,000 changes (was 2,000).
+
 ## 1.0.3 (2026-11-03)
 
 Upgrading from 1.0.2: no database migration. Rebuild the web player. Remote control links of an account

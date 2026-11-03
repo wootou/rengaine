@@ -58,6 +58,7 @@ final class Lookalikes
         // Noms proches : comparés par blocs (mêmes 2 premières lettres, ou mêmes 3 dernières)
         $blocks = [];
         foreach (array_keys($byKey) as $key) {
+            $key = (string) $key; // PHP range la clé « 1975 » en entier
             if (strlen($key) < self::MIN_LENGTH) {
                 continue;
             }
@@ -68,7 +69,7 @@ final class Lookalikes
             $n = count($keys);
             for ($i = 0; $i < $n; $i++) {
                 for ($j = $i + 1; $j < $n; $j++) {
-                    [$x, $y] = [$keys[$i], $keys[$j]];
+                    [$x, $y] = [(string) $keys[$i], (string) $keys[$j]];
                     $max = min(strlen($x), strlen($y)) <= 6 ? 1 : 2;
                     if (abs(strlen($x) - strlen($y)) > $max) {
                         continue;

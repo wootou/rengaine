@@ -16,6 +16,8 @@ final class Principal
         public readonly string $tokenKind,
         /** Secret de la session web (cookie), pour recalculer le jeton anti-CSRF ; null pour un Bearer */
         public readonly ?string $sessionSecret = null,
+        /** Jeton d'agent : capacités accordées (relues à chaque requête, voir Capabilities) ; null sinon */
+        public readonly ?array $capabilities = null,
     ) {
     }
 
@@ -27,6 +29,6 @@ final class Principal
     /** @return array{id: int, email: string, displayName: string, role: string} */
     public function user(): array
     {
-        return ['id' => $this->userId, 'email' => $this->email, 'displayName' => $this->displayName, 'role' => $this->role];
+        return ['id' => $this->userId, 'email' => $this->email === '' ? null : $this->email, 'displayName' => $this->displayName, 'role' => $this->role];
     }
 }

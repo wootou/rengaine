@@ -89,6 +89,16 @@ url = ""                          ; required for openai (e.g. http://localhost:1
 effort = "high"                   ; anthropic only: low, medium, high, xhigh, max
 tours_max = 40                    ; maximum exchanges with the model per task
 
+[pochettes]                       ; covers found online for albums without one (optional, off by default)
+;recherche_en_ligne = 1           ; lets admins and agents search iTunes, Deezer and Cover Art Archive and propose
+                                  ; a cover by its link; the server then contacts those sites (https only, fixed list)
+;hotes_interdits = example.net, nas.example.org
+                                  ; for agents allowed covers "from any site": names (and their subdomains) never
+                                  ; contacted. Add your own public services here, especially those protected by an
+                                  ; IP allow-list. This site ([site] url) is always blocked.
+;ip_interdites = 203.0.113.0/24, 198.51.100.7
+                                  ; same, by public address or IPv4 range (this site's addresses are always blocked)
+
 [limites]                         ; rate limits (APCu counters), per IPv4 address or IPv6 /64
 requetes_par_minute = 1200        ; API requests, excluding images and audio streams
 medias_par_minute = 6000          ; images and audio streams
@@ -101,3 +111,4 @@ changements_mdp_par_10min = 10    ; password changes and resets
 oublis_mdp_par_heure = 10         ; "forgot password" requests
 recherches_par_minute = 600
 jetons_invalides_par_10min = 30   ; invalid tokens before the address is blocked
+jaquettes_par_10min = 60          ; online cover searches and downloads, per account

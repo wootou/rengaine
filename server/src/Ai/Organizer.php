@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace Musique\Ai;
 
+use Musique\Auth\Capabilities;
 use Musique\Api\McpExecutor;
 use Musique\Api\McpTools;
 use Musique\Auth\Principal;
@@ -45,7 +46,8 @@ final class Organizer
             $agent = $this->db->one("SELECT id, email, display_name FROM users WHERE id = ? AND role = 'agent' AND status = 'active'", [(int) ($params['agentUserId'] ?? 0)])
                 ?? throw new AiException('Compte agent introuvable ou suspendu');
             $executor = McpExecutor::forPrincipal($this->config, $this->db, $this->logger,
-                new Principal((int) $agent['id'], (string) $agent['email'], (string) $agent['display_name'], 'agent', 0, 'agent'));
+                // Pas de jeton ici : ce que l'organisation faisait en 1.0.3 (tout sauf les pochettes en ligne)
+                new Principal((int) $agent['id'], (string) ($agent['email'] ?? ''), (string) $agent['display_name'], 'agent', 0, 'agent', null, Capabilities::legacy()));
             $progress('  ' . $provider->label());
             $provider->start($this->system(), (string) ($params['instructions'] ?? ''), $executor->describe());
 

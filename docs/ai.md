@@ -4,7 +4,7 @@ Rengaine lets an AI help you tidy a large library (genres, years, artist spellin
 ever changing it behind your back: an AI can only **propose** batches of corrections, which you apply or
 reject in **Admin > Proposals**, and which stay reversible.
 
-There are two ways to bring an AI in. They use the same 21 tools.
+There are two ways to bring an AI in. They use the same 24 tools.
 
 ## 1. Any MCP client (recommended)
 
@@ -12,8 +12,9 @@ The server exposes a [Model Context Protocol](https://modelcontextprotocol.io/) 
 `/api/v2/mcp` (Streamable HTTP transport, stateless, JSON responses). Any MCP-capable client can connect:
 Claude Code, and other compatible clients.
 
-1. In **Admin > Accounts**, create an account with the **agent** role.
-2. On its page, create a token. For Claude Code, the screen also shows the ready-made command:
+1. In **Admin > Accounts**, create an account with the **agent** role (no email needed).
+2. On its page, create a token and tick what this AI may do (see below). For Claude Code, the screen also
+   shows the ready-made command:
 
    ```bash
    claude mcp add --transport http rengaine https://music.example.org/api/v2/mcp \
@@ -25,8 +26,31 @@ Claude Code, and other compatible clients.
 
 Tools: search, list and read albums (with raw file tags and active corrections), artists, tracks,
 genres, unmapped tag values, collections, duplicates, same recordings, damaged files, inbox, indexing
-errors, corrections, proposal batches, artists spelled several ways; and `propose_changes`, the only one that writes (it creates a
-pending batch). The token only works on the API; a browser session cannot use the MCP endpoint.
+errors, corrections, proposal batches, artists spelled several ways, albums present twice, artists read from
+"Artist - Title" track titles, covers found online (if enabled, see [configuration](configuration.md)); and
+`propose_changes`, the only one that writes (it creates a
+pending batch). Only agent tokens can use the MCP endpoint: an admin token or a browser session is refused.
+
+### What each AI may do
+
+Each agent token has one switch per function, set on the account page and applied at the next request
+(each change is in the audit log). The server enforces them on every request made with that token, through
+MCP or directly on the API; a disabled function is missing from the tool list and answers
+`403 capability_disabled` with its name.
+
+| Function | By default | |
+|---|---|---|
+| Read the library | on | albums, tracks, artists, genres, search; corrections and batches |
+| Analyse the library | on | duplicates, same recordings, damaged files, tag values, lookalike artists, albums present twice, artists read from titles |
+| See the inbox and errors | off | shows file paths |
+| Propose tag corrections | on | titles, artists, years, genres, numbers, BPM, key |
+| Propose structural changes | off | merges, removed albums, album kind, moved tracks |
+| Propose a known cover | on | an image already in the library |
+| Covers found online | off | the server connects to the Internet (and must allow it, see [configuration](configuration.md)) |
+| └ Known sites only | on | iTunes, Deezer, Cover Art Archive; unticked, a cover may come from any https site (warning shown), every other check stays |
+
+Tokens created before 1.0.4 keep what they could do then (everything except covers found online). The
+reorganisation started from **Admin > Proposals** works with the same set.
 
 Clients that require OAuth for remote servers (some hosted assistants) cannot connect yet.
 

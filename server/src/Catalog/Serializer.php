@@ -108,14 +108,21 @@ final class Serializer
             }
             $trackArtists = $artists[$id] ?? [];
             $credit = $r['artist_credit'];
+            $source = 'tag';
             if ($credit === null) {
                 $main = array_column(array_filter($trackArtists, static fn ($a) => $a['role'] === 'main'), 'name');
-                $credit = $main !== [] ? implode(', ', $main) : ($r['album_artist'] ?? self::UNKNOWN);
+                [$credit, $source] = match (true) {
+                    $main !== [] => [implode(', ', $main), 'artists'],
+                    $r['album_artist'] !== null => [$r['album_artist'], 'album'],
+                    // Libellé d'affichage seulement : artistCreditSource « none » dit qu'aucun artiste n'est connu
+                    default => [self::UNKNOWN, 'none'],
+                };
             }
             $out[] = [
                 'id' => $id,
                 'title' => $r['title'],
                 'artistCredit' => $credit,
+                'artistCreditSource' => $source,
                 'artists' => $trackArtists,
                 'album' => ['id' => (int) $r['album_id'], 'title' => $r['album_title'], 'artistName' => $r['album_artist'] ?? self::VARIOUS, 'year' => Format::int($r['year'])],
                 'genres' => $genres[$id] ?? [],

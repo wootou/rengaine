@@ -16,4 +16,6 @@ Highlights:
   stable, `message` follows the server language.
 - Versioned documents (queue, settings) use `ETag` / `If-Match`; a conflict returns the current document.
 - Streams support HTTP ranges; images are served with permanent caching (content-addressed).
-- `POST /mcp` is the Model Context Protocol endpoint for AI agents (see [AI](ai.md)).
+- `POST /mcp` is the Model Context Protocol endpoint for AI agents (see [AI](ai.md)); it only accepts agent
+  tokens. An agent token can only call the functions ticked for it, on MCP as on the API directly
+  (`403 capability_disabled` otherwise; it reads its own list in `GET /me`).

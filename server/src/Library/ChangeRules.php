@@ -48,6 +48,7 @@ final class ChangeRules
             'album.album_artist' => $raw === null ? $in->string($key, 0, 0, true, true) : $in->text($key, 1, 255),
             'album.is_compilation' => $in->bool($key),
             'album.kind' => $in->enum($key, ['album', 'loose']),
+            'album.removed' => $this->removable((int) $id, (bool) $in->bool($key), $key),
             'album.genre_ids' => $this->genreIds((array) $in->intList($key, 50), $key),
             'album.cover' => $this->cover($in->string($key, 64, 64, true, true), $key),
             'track.artist_credit' => $raw === null ? $in->string($key, 0, 0, true, true) : $in->text($key, 1, 500),
@@ -63,6 +64,15 @@ final class ChangeRules
             'genre_alias.genre_id' => $this->genreId($in->int($key, 1, PHP_INT_MAX, true, true), $key),
         };
         return [$field, $value];
+    }
+
+    /** Retirer un album (doublon) : seulement un album lu dans un dossier, que la reconstruction masque. */
+    private function removable(int $id, bool $removed, string $key): bool
+    {
+        if ($removed && $this->db->value('SELECT source_dir FROM albums WHERE id = ?', [$id]) === null) {
+            throw ApiError::invalid($key, 'Album créé dans l’admin : déplacez ses pistes plutôt');
+        }
+        return $removed;
     }
 
     /** @param list<int> $ids @return list<int> */

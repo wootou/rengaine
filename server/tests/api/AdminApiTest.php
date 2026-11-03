@@ -366,17 +366,21 @@ final class AdminApiTest extends ApiCase
         $this->assertContract($r, 'adminGetAlbum', 200);
         $keys = array_keys($r->data()['tracks'][0]);
         sort($keys);
-        $this->assertSame(['artistCredit', 'discNumber', 'durationMs', 'id', 'title', 'trackNumber'], $keys);
+        $this->assertSame(['artistCredit', 'artistCreditSource', 'discNumber', 'durationMs', 'id', 'title', 'trackNumber'], $keys);
         $this->assertSame(['trackId', 'storageKey', 'tags'], array_keys($r->data()['files'][0]));
         $this->assertTrue(strlen($r->raw) < strlen($this->admin('GET', "/api/v2/admin/albums/$id")->raw), 'plus court');
 
         // « Bey-oncé » (créé ici) et « Beyoncé » : même clé sans ponctuation ni espaces ; « Groupee » : une lettre de plus
         $bey = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Beyoncé'");
         $track = (int) $this->db->value("SELECT id FROM tracks WHERE title = 'Dix'");
-        $this->db->run("INSERT INTO artists (name) VALUES ('Bey-oncé'), ('Groupee')");
+        // « 1975 » / « 1976 » : clés faites de chiffres, que PHP range en entiers (500 en 1.0.3)
+        $this->db->run("INSERT INTO artists (name) VALUES ('Bey-oncé'), ('Groupee'), ('1975'), ('1976')");
+        $n1975 = (int) $this->db->value("SELECT id FROM artists WHERE name = '1975'");
+        $n1976 = (int) $this->db->value("SELECT id FROM artists WHERE name = '1976'");
         $fake = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Bey-oncé'");
         $typo = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Groupee'");
-        $this->db->run("INSERT INTO track_artists (track_id, artist_id, role, position) VALUES (?, ?, 'featured', 9), (?, ?, 'featured', 10)", [$track, $fake, $track, $typo]);
+        $this->db->run("INSERT INTO track_artists (track_id, artist_id, role, position) VALUES (?, ?, 'featured', 9), (?, ?, 'featured', 10), (?, ?, 'featured', 11), (?, ?, 'featured', 12)",
+            [$track, $fake, $track, $typo, $track, $n1975, $track, $n1976]);
         try {
             $r = $this->as($this->token('agent'), 'GET', '/api/v2/admin/artist-lookalikes');
             $this->assertContract($r, 'adminListArtistLookalikes', 200);
@@ -384,13 +388,80 @@ final class AdminApiTest extends ApiCase
             $groupe = (int) $this->db->value("SELECT id FROM artists WHERE name = 'Groupe'");
             $this->assertTrue(in_array([[$bey, $fake], 'sameKey', 0], $pairs, true), json_encode($pairs));
             $this->assertTrue(in_array([[$groupe, $typo], 'close', 1], $pairs, true), json_encode($pairs));
+            $this->assertTrue(in_array([[$n1975, $n1976], 'close', 1], $pairs, true), json_encode($pairs));
             $this->assertError($this->as($this->token('user'), 'GET', '/api/v2/admin/artist-lookalikes'), 403, 'forbidden', 'adminListArtistLookalikes');
         } finally {
-            $this->db->run('DELETE FROM track_artists WHERE artist_id IN (?, ?)', [$fake, $typo]);
-            $this->db->run('DELETE FROM artists WHERE id IN (?, ?)', [$fake, $typo]);
+            $this->db->run('DELETE FROM track_artists WHERE artist_id IN (?, ?, ?, ?)', [$fake, $typo, $n1975, $n1976]);
+            $this->db->run('DELETE FROM artists WHERE id IN (?, ?, ?, ?)', [$fake, $typo, $n1975, $n1976]);
         }
 
         $this->assertSame(\Musique\Api\Kernel::RELEASE, $this->call('GET', '/api/v2/server')->data()['serverVersion']);
+    }
+
+    /** 1.0.4 : albums en double, retrait d'une copie (masquée, annulable), pistes sans artiste, artistes lus dans les titres. */
+    public function testDoublonsRetraitEtArtistesDansLesTitres(): void
+    {
+        $album2 = $this->albumId('Album 2');
+        $album10 = $this->albumId('Album 10');
+        $agent = $this->token('agent');
+
+        // Album 10 rebaptisé « Album 2 (Deluxe) » : même artiste, même titre une fois la mention retirée
+        $this->admin('PATCH', "/api/v2/admin/albums/$album10", ['title' => 'Album 2 (Deluxe)']);
+        $r = $this->as($agent, 'GET', '/api/v2/admin/duplicate-albums');
+        $this->assertContract($r, 'adminListDuplicateAlbums', 200);
+        $pairs = array_map(static fn ($p) => [array_column($p['albums'], 'id'), $p['reason']], $r->data()['items']);
+        $this->assertTrue(in_array([[$album2, $album10], 'sameTitle'], $pairs, true), json_encode($pairs) . ' (la plus complète d’abord)');
+
+        // Retrait proposé puis appliqué : masqué avec ses pistes, gardé après le scan, revenu à l'annulation
+        $r = $this->as($agent, 'POST', '/api/v2/admin/change-sets', ['title' => 'Doublons', 'changes' => [['entityType' => 'album', 'entityId' => $album10, 'field' => 'removed', 'value' => true]]]);
+        $this->assertContract($r, 'adminCreateChangeSet', 201);
+        $setId = $r->data()['id'];
+        $this->assertSame(200, $this->admin('GET', "/api/v2/albums/$album10")->status, 'rien avant l’admin');
+        $this->assertContract($this->admin('POST', "/api/v2/admin/change-sets/$setId/apply"), 'adminDecideChangeSet', 200);
+        $dix = (int) $this->db->value("SELECT id FROM tracks WHERE title = 'Dix'");
+        $this->assertSame([404, false], [$this->admin('GET', "/api/v2/albums/$album10")->status, $this->admin('GET', "/api/v2/tracks/$dix")->data()['available']]);
+        $this->reindex(true);
+        $this->assertSame(404, $this->admin('GET', "/api/v2/albums/$album10")->status, 'retrait gardé après le scan');
+        $this->assertTrue(is_file(self::$env['root'] . '/Groupe - Album 10/01 - Dix.mp3'), 'fichier intact');
+        $this->assertContract($this->admin('POST', "/api/v2/admin/change-sets/$setId/revert"), 'adminDecideChangeSet', 200);
+        $this->assertSame(1, $this->admin('GET', "/api/v2/albums/$album10")->data()['trackCount'], 'revenu');
+        foreach ($this->admin('GET', "/api/v2/admin/corrections?entityType=album&entityId=$album10&status=active")->data()['items'] as $x) {
+            $this->admin('POST', '/api/v2/admin/corrections/' . $x['id'] . '/revert');
+        }
+
+        // Piste sans aucun artiste, au titre « Artiste - Titre » (inversé, entité HTML) : filtre et suggestion
+        try {
+            $this->db->run("DELETE FROM track_artists WHERE track_id = ? AND role = 'main'", [$dix]);
+            $this->db->run('UPDATE albums SET album_artist_id = NULL WHERE id = ?', [$album10]);
+            $this->db->run("UPDATE tracks SET artist_credit = NULL, title = 'Dix &amp; Onze (Official Video) - Groupe' WHERE id = ?", [$dix]);
+            $t = $this->admin('GET', "/api/v2/tracks/$dix")->data();
+            $this->assertSame('none', $t['artistCreditSource']);
+            $this->assertContract($this->admin('GET', '/api/v2/tracks?missing=artist&albumKind=album&compilation=false'), 'listTracks', 200);
+            $this->assertSame([$dix], array_column($this->admin('GET', '/api/v2/tracks?missing=artist&limit=500')->data()['items'], 'id'));
+            $r = $this->as($agent, 'GET', "/api/v2/admin/title-credit-suggestions?album=$album10");
+            $this->assertContract($r, 'adminListTitleCreditSuggestions', 200);
+            $s = $r->data()['items'][0];
+            $this->assertSame([$dix, 'Groupe', 'Dix & Onze', true, true], [$s['trackId'], $s['suggestedArtist'], $s['suggestedTitle'], $s['inverted'], $s['knownArtist']]);
+            $this->assertError($this->admin('GET', '/api/v2/tracks?missing=titre'), 400, 'bad_request', 'listTracks');
+        } finally {
+            $this->reindex(true);
+        }
+        $this->assertSame('artists', $this->admin('GET', "/api/v2/tracks/$dix")->data()['artistCreditSource'], 'remis par le scan');
+        $this->assertSame('Simon & Garfunkel', \Musique\Library\Text::clean('Simon &amp; Garfunkel'));
+    }
+
+    /** Jaquette proposée puis refusée : l'image téléchargée ne reste pas en base (revue de sécurité). */
+    public function testJaquetteRefuseePurgee(): void
+    {
+        $album = $this->albumId('Album 10');
+        $hex = hash('sha256', 'jaquette proposée ' . random_int(0, PHP_INT_MAX));
+        $this->db->run("INSERT INTO images (sha256, source, mime_type, width, height, size_bytes) VALUES (UNHEX(?), 'upload', 'image/jpeg', 600, 600, 1234)", [$hex]);
+        $r = $this->as($this->token('agent'), 'POST', '/api/v2/admin/change-sets', ['title' => 'Jaquette', 'changes' => [['entityType' => 'album', 'entityId' => $album, 'field' => 'coverImageHash', 'value' => $hex]]]);
+        $this->assertContract($r, 'adminCreateChangeSet', 201);
+        $this->assertSame(1, (int) $this->db->value('SELECT COUNT(*) FROM images WHERE sha256 = UNHEX(?)', [$hex]));
+        $this->assertContract($this->admin('POST', '/api/v2/admin/change-sets/' . $r->data()['id'] . '/reject'), 'adminDecideChangeSet', 200);
+        $this->assertSame(0, (int) $this->db->value('SELECT COUNT(*) FROM images WHERE sha256 = UNHEX(?)', [$hex]), 'image purgée');
+        $this->assertTrue((int) $this->db->value('SELECT COUNT(*) FROM images') > 0, 'les autres images restent');
     }
 
     public function testArtisteRenommePuisFusionne(): void

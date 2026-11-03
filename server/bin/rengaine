@@ -47,7 +47,7 @@ Usage : musique <commande> [arguments]
   empreintes [--min 0.8] [--recalculer]
                             Même enregistrement dans plusieurs pistes, d'après l'empreinte acoustique
                             (BAS-03) ; --recalculer refait toutes les comparaisons
-  user:create <e-mail> <nom> [--role admin|user|agent]
+  user:create <e-mail> <nom> [--role admin|user|agent]   (agent sans adresse : e-mail « - »)
                             Crée un compte actif. Le mot de passe est demandé sans s'afficher (lu
                             sur l'entrée standard s'il n'y a pas de terminal). Un compte agent n'a
                             pas de mot de passe : son jeton est affiché une seule fois.
@@ -254,11 +254,13 @@ try {
         case 'user:create':
             [$email, $name] = [$positional[0] ?? '', trim(implode(' ', array_slice($positional, 1)))];
             $role = $options['role'] ?? 'user';
-            if (filter_var($email, FILTER_VALIDATE_EMAIL) === false || $name === '' || !in_array($role, ['admin', 'user', 'agent'], true)) {
-                throw new InvalidArgumentException('usage : user:create <e-mail> <nom> [--role admin|user|agent]');
+            // Un compte agent peut se passer d'adresse : « - » à la place de l'e-mail
+            $noEmail = $role === 'agent' && $email === '-';
+            if ((!$noEmail && filter_var($email, FILTER_VALIDATE_EMAIL) === false) || $name === '' || !in_array($role, ['admin', 'user', 'agent'], true)) {
+                throw new InvalidArgumentException('usage : user:create <e-mail> <nom> [--role admin|user|agent]   (agent sans adresse : user:create - <nom> --role agent)');
             }
             $db = Database::fromConfig($config);
-            if ($db->value('SELECT id FROM users WHERE email = ?', [mb_strtolower($email)]) !== null) {
+            if (!$noEmail && $db->value('SELECT id FROM users WHERE email = ?', [mb_strtolower($email)]) !== null) {
                 throw new RuntimeException('Un compte existe déjà avec cette adresse');
             }
             $hash = null;
@@ -286,7 +288,7 @@ try {
                 $hash = Musique\Auth\Passwords::hash($password);
             }
             $db->run("INSERT INTO users (email, display_name, password_hash, role, status, decided_at) VALUES (?, ?, ?, ?, 'active', CURRENT_TIMESTAMP(3))",
-                [mb_strtolower($email), $name, $hash, $role]);
+                [$noEmail ? null : mb_strtolower($email), $name, $hash, $role]);
             $id = (int) $db->pdo()->lastInsertId();
             $db->run("INSERT INTO audit_log (action, target_type, target_id, after_value) VALUES ('user.create', 'user', ?, ?)",
                 [$id, json_encode(['role' => $role, 'via' => 'cli'])]);
@@ -294,7 +296,10 @@ try {
             echo "Compte n° $id créé ($role).\n";
             if ($role === 'agent') {
                 $t = (new Musique\Auth\Tokens($db))->create($id, 'agent', $name, null, null);
+                // Capacités par défaut (IA-07) ; l'admin en coche d'autres dans Comptes
+                $db->run('UPDATE access_tokens SET capabilities = ? WHERE id = ?', [json_encode(Musique\Auth\Capabilities::defaults()), $t['id']]);
                 echo "Jeton de l'agent (affiché une seule fois, à garder en lieu sûr) :\n{$t['secret']}\n";
+                echo 'Capacités : ' . implode(', ', Musique\Auth\Capabilities::defaults()) . " (à régler dans Admin > Comptes)\n";
             }
             exit(0);
 

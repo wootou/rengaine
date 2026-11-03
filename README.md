@@ -6,7 +6,7 @@
 
 🌐 **Website and documentation: [rengaine.org](https://rengaine.org)**
 
-**Status:** version 1.0.3 (see [CHANGELOG.md](CHANGELOG.md)). **Android app:** source and APK at [rengaine-android](https://github.com/wootou/rengaine-android/releases), test version 1.0.0-rc.5.
+**Status:** version 1.0.4 (see [CHANGELOG.md](CHANGELOG.md)). **Android app:** source and APK at [rengaine-android](https://github.com/wootou/rengaine-android/releases), test version 1.0.0-rc.5.
 
 
 <picture>
@@ -23,7 +23,7 @@
 - **The whole household.** Several accounts, synced between the web player and the Android app.
 - **Shared remote control.** One link lets a guest control the music from their phone.
 - **A tidy library.** Genres, reversible corrections, duplicate detection.
-- **AI-assisted, never AI-driven.** An AI proposes corrections; you decide.
+- **AI-assisted, never AI-driven.** An AI proposes corrections; you decide, and choose what each AI may do.
 - **Respectful by design.** No tracker; your data stays with you.
 
 ## Preview

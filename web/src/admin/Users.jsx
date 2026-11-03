@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { request } from '../api/client.js';
 import { useApi, useDebounced, useSession } from '../hooks.js';
 import { Link } from '../router.jsx';
-import { Feedback, ROLE, STATUS, adminEvents, formatDate, useAction, useOffsetPage, Pager } from './common.jsx';
+import { CAPABILITY, CAPABILITY_RISK, Feedback, ROLE, STATUS, adminEvents, formatDate, useAction, useOffsetPage, Pager } from './common.jsx';
 import { labels, tr } from '../i18n/index.js';
 
 /** @typedef {import('../api/types.js').Schemas} Schemas */
@@ -109,11 +109,12 @@ function CreateUser({ onDone }) {
   return (
     <form className="admin-form card" onSubmit={async (e) => {
       e.preventDefault();
-      const body = form.role === 'agent' ? { email: form.email, displayName: form.displayName, role: form.role } : form;
+      // Un agent (une IA) n'a ni mot de passe ni, au besoin, d'adresse
+      const body = form.role === 'agent' ? { email: form.email.trim() || null, displayName: form.displayName, role: form.role } : form;
       if (await action.run(() => request('POST', '/admin/users', { body }))) onDone();
     }}>
       <h3>{tr('Nouveau compte (actif tout de suite)')}</h3>
-      <label>{tr('Adresse e-mail')}<input type="email" required value={form.email} onChange={(e) => set({ email: e.target.value })} /></label>
+      <label>{form.role === 'agent' ? tr('Adresse e-mail (facultative pour un agent)') : tr('Adresse e-mail')}<input type="email" required={form.role !== 'agent'} value={form.email} onChange={(e) => set({ email: e.target.value })} /></label>
       <label>{tr('Nom affiché')}<input required maxLength={100} value={form.displayName} onChange={(e) => set({ displayName: e.target.value })} /></label>
       <label>{tr('Rôle')}
         <select value={form.role} onChange={(e) => set({ role: /** @type {Schemas['Role']} */ (e.target.value) })}>
@@ -138,6 +139,8 @@ export function UserDetail({ id }) {
   const [name, setName] = useState(/** @type {string | null} */ (null));
   const [token, setToken] = useState(/** @type {Schemas['TokenResponse'] | null} */ (null));
   const [tokenName, setTokenName] = useState('');
+  // Fonctions du prochain jeton d'agent : null = celles par défaut (cochées d'après le catalogue)
+  const [newCaps, setNewCaps] = useState(/** @type {string[] | null} */ (null));
 
   if (api.error) return <p className="empty">{api.error.status === 404 ? tr('Compte introuvable.') : api.error.message}</p>;
   if (!u) return <p className="empty">{tr('Chargement…')}</p>;
@@ -148,7 +151,7 @@ export function UserDetail({ id }) {
       <p><Link to="/admin">{tr('← Comptes')}</Link></p>
       <h2 className="admin-title">{u.displayName} <span className={`pill status-${u.status}`}>{STATUS[u.status]}</span></h2>
       <dl className="facts">
-        <dt>{tr('E-mail')}</dt><dd>{u.email}</dd>
+        <dt>{tr('E-mail')}</dt><dd>{u.email ?? '—'}</dd>
         <dt>{tr('Créé le')}</dt><dd>{formatDate(u.createdAt)}</dd>
         <dt>{tr('Décision')}</dt><dd>{formatDate(u.decidedAt)}</dd>
         <dt>{tr('Dernière connexion')}</dt><dd>{formatDate(u.lastLoginAt)}</dd>
@@ -192,6 +195,10 @@ export function UserDetail({ id }) {
               {d.name} <small>{d.kind === 'web' ? tr('navigateur') : d.kind === 'app' ? tr('appli') : tr('agent')} · {d.prefix}…{d.current ? ` · ${tr('cette session')}` : ''}</small>
               <small className="block">{tr('créé le {date}', { date: formatDate(d.createdAt) })} · {tr('vu le {date}', { date: formatDate(d.lastUsedAt) })}{d.lastIp ? ` · ${d.lastIp}` : ''}{d.expiresAt ? ` · ${tr('expire le {date}', { date: formatDate(d.expiresAt) })}` : ''}</small>
             </span>
+            {d.kind === 'agent' && d.capabilities ? (
+              <Capabilities selected={d.capabilities} busy={action.busy}
+                onChange={(caps) => void action.run(() => request('PATCH', `/admin/tokens/${d.id}`, { body: { capabilities: caps } }), tr('Fonctions enregistrées.')).then((ok) => ok && api.reload())} />
+            ) : null}
             {!d.current ? (
               <button type="button" className="link-btn" disabled={action.busy} onClick={async () => {
                 if (!window.confirm(tr('Révoquer « {nom} » ? L’appareil devra se reconnecter.', { nom: d.name }))) return;
@@ -207,7 +214,7 @@ export function UserDetail({ id }) {
         <form className="admin-form inline" onSubmit={async (e) => {
           e.preventDefault();
           await action.run(async () => {
-            const r = await request('POST', `/admin/users/${u.id}/tokens`, { body: { name: tokenName.trim() } });
+            const r = await request('POST', `/admin/users/${u.id}/tokens`, { body: { name: tokenName.trim(), ...(u.role === 'agent' && newCaps ? { capabilities: newCaps } : {}) } });
             setToken(/** @type {Schemas['TokenResponse']} */ (r.data));
             setTokenName('');
             api.reload();
@@ -215,6 +222,7 @@ export function UserDetail({ id }) {
         }}>
           <label>{tr('Nouveau jeton (appli, agent)')}<input required maxLength={100} placeholder={tr('Nom de l’appareil')} value={tokenName} onChange={(e) => setTokenName(e.target.value)} /></label>
           <button type="submit" disabled={action.busy || !tokenName.trim()}>{tr('Créer le jeton')}</button>
+          {u.role === 'agent' ? <Capabilities selected={newCaps} busy={action.busy} onChange={setNewCaps} /> : null}
         </form>
       ) : null}
       {token ? (
@@ -229,6 +237,51 @@ export function UserDetail({ id }) {
         </div>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Fonctions d'un jeton d'agent (IA-07) : un interrupteur par capacité, avec sa description et son risque.
+ * selected null = valeurs par défaut du serveur.
+ * @param {{ selected: string[] | null, busy: boolean, onChange: (caps: string[]) => void }} props
+ */
+function Capabilities({ selected, busy, onChange }) {
+  const api = useApi('/admin/capabilities');
+  const catalog = /** @type {{ items: Schemas['CapabilityInfo'][] } | null} */ (api.data)?.items ?? [];
+  const current = selected ?? catalog.filter((c) => c.default).map((c) => c.id);
+  return (
+    <fieldset className="capabilities">
+      <legend>{tr('Fonctions permises à cette IA')}</legend>
+      {catalog.map((c) => {
+        const toggle = (/** @type {string} */ id, /** @type {boolean} */ on) => onChange(catalog.map((x) => x.id).filter((x) => (x === id ? !on : current.includes(x))));
+        if (c.id === 'cover.anyhost') {
+          // Affiché à l'envers, sous « Jaquettes en ligne » : « seulement les sites connus », coché par défaut
+          const any = current.includes('cover.anyhost');
+          const online = current.includes('cover.online');
+          return (
+            <div key={c.id} className="sub-capability">
+              <label className="check">
+                <input type="checkbox" checked={!any} disabled={busy || !online} onChange={() => toggle('cover.anyhost', any)} />
+                {' '}{tr('Seulement les sites connus (iTunes, Deezer, Cover Art Archive)')}
+              </label>
+              {any ? (
+                <p className="warning" role="note">{tr('Attention : l’IA peut proposer une jaquette de n’importe quel site : votre serveur se connectera à ce site, qui verra son adresse. Les adresses de votre réseau local et celles listées dans les sites interdits de la configuration restent bloquées. Regardez l’image avant d’appliquer le lot.')}</p>
+              ) : null}
+            </div>
+          );
+        }
+        const [label, description] = CAPABILITY[c.id] ?? [c.id, ''];
+        const on = current.includes(c.id);
+        return (
+          <label key={c.id} className="check">
+            <input type="checkbox" checked={on} disabled={busy}
+              onChange={() => toggle(c.id, on)} />
+            {' '}<strong>{label}</strong>{c.risk ? <span className={`pill risk-${c.risk}`}>{CAPABILITY_RISK[c.risk] ?? c.risk}</span> : null}
+            <small className="block">{description}</small>
+          </label>
+        );
+      })}
+    </fieldset>
   );
 }
 

@@ -105,6 +105,30 @@ final class Images
     }
 
     /**
+     * Images envoyées (jaquettes proposées par un lien) que plus rien n'utilise : ni album, ni artiste, ni
+     * piste, ni correction proposée ou active. Supprimées avec leurs octets, pour qu'un lot refusé ne laisse
+     * rien en base. @param list<string> $hashes empreintes en hexadécimal @return int images supprimées
+     */
+    public function purgeUnusedUploads(array $hashes): int
+    {
+        $n = 0;
+        foreach (array_unique($hashes) as $hex) {
+            if (!preg_match('/^[0-9a-f]{64}$/', $hex)) {
+                continue;
+            }
+            $n += $this->db->run(
+                "DELETE FROM images WHERE sha256 = UNHEX(?) AND source = 'upload'
+                   AND NOT EXISTS (SELECT 1 FROM albums WHERE cover_image_id = images.id)
+                   AND NOT EXISTS (SELECT 1 FROM artists WHERE image_id = images.id)
+                   AND NOT EXISTS (SELECT 1 FROM tracks WHERE image_id = images.id)
+                   AND NOT EXISTS (SELECT 1 FROM corrections c WHERE c.field = 'cover' AND c.status IN ('proposed', 'active') AND c.value = JSON_QUOTE(?))",
+                [$hex, $hex]
+            )->rowCount(); // image_blobs suit (ON DELETE CASCADE)
+        }
+        return $n;
+    }
+
+    /**
      * Octets d'origine d'une image : copie en cache, base (envoi), stockage (fichier), ou nouvelle
      * extraction de la pochette intégrée quand la copie du cache a disparu (gardée de nouveau).
      * @param array{source: string, storage_key: ?string, missing_since: ?string} $img

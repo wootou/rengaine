@@ -67,6 +67,24 @@ account requests notify the admins, password reset works, users get a mail when 
 approved, and admins receive a digest of background-job errors. Test with
 `rengaine mail:test you@example.org`, check the queue with `rengaine mail:status`.
 
+## Covers found online
+
+Off by default. With `[pochettes] recherche_en_ligne = 1`, admins and agents can look for the cover of an
+album on iTunes, Deezer and MusicBrainz / Cover Art Archive (`GET /admin/albums/{id}/cover-candidates`, MCP
+tool `find_cover`) and propose one by its link in a batch (`coverUrl`). The server then contacts those sites,
+and only them: https, a fixed list of hosts checked again after each redirect, public addresses only,
+JPEG / PNG / WebP images from 200 to 6000 pixels, at most 5 MB; a rejected proposal leaves no image behind. The image is downloaded when the batch is
+proposed and shown in **Admin > Proposals**; nothing changes until you apply it. An agent token whose
+"known sites only" switch is unticked (see [AI](ai.md)) may propose a cover from any https site: only the
+list of sites is lifted, every other check stays. In that mode, `[pochettes] hotes_interdits` (names, with their
+subdomains) and `ip_interdites` (public addresses or IPv4 ranges) are never contacted: add your own public
+services there, especially those protected by an IP allow-list, which the server could otherwise reach from
+its public address. This site ([site] url) and its addresses are always blocked. Whatever goes wrong (site
+unreachable, error page, not an image), the AI only gets "no image found at this address"; the detail is in
+the technical log. Searches are capped per
+account (`[limites] jaquettes_par_10min`, 60). Limits: the server must reach those sites directly over
+IPv4 (no outgoing proxy is used, and IPv6-only hosts are not supported), and a download gives up after 20 s.
+
 ## Retention and privacy
 
 `[journaux]` sets the log folder and level, and how long data is kept: audit entries, finished jobs and

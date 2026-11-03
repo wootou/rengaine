@@ -138,6 +138,10 @@ abstract class ApiCase extends TestCase
             $users[$k] = ['id' => (int) $db->pdo()->lastInsertId(), 'email' => $email];
         }
         $agentToken = (new \Musique\Auth\Tokens($db))->create($users['agent']['id'], 'agent', 'Claude', null, null);
+        // Toutes les capacités sauf les pochettes en ligne (comme un jeton de la 1.0.3 après migration) ;
+        // les tests des droits (CapabilitiesApiTest) en retirent et en ajoutent
+        $db->run('UPDATE access_tokens SET capabilities = ? WHERE id = ?', [json_encode(\Musique\Auth\Capabilities::legacy()), $agentToken['id']]);
+        $agentTokenId = $agentToken['id'];
 
         // Faux serveur SMTP : les mails des tests arrivent dans $base/mails, jamais dans MailCatcher
         $smtpPort = self::freePort();
@@ -147,7 +151,7 @@ abstract class ApiCase extends TestCase
         ), 'url' => ''];
         self::$env = [
             'db' => $db, 'base' => $base, 'root' => $root, 'dbName' => $dbName, 'users' => $users,
-            'agentToken' => $agentToken['secret'], 'tokens' => [], 'smtpPort' => $smtpPort,
+            'agentToken' => $agentToken['secret'], 'agentTokenId' => $agentTokenId, 'tokens' => [], 'smtpPort' => $smtpPort,
         ];
         self::waitPort($smtpPort);
         self::$env['url'] = self::server();

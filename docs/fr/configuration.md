@@ -68,6 +68,25 @@ les demandes de compte préviennent les admins, le « mot de passe oublié » fo
 quand son compte est approuvé, et les admins reçoivent un résumé des erreurs des tâches de fond. Essai :
 `rengaine mail:test vous@example.org` ; file d'envoi : `rengaine mail:status`.
 
+## Jaquettes trouvées en ligne
+
+Désactivé par défaut. Avec `[pochettes] recherche_en_ligne = 1`, les admins et les agents peuvent chercher la
+jaquette d'un album sur iTunes, Deezer et MusicBrainz / Cover Art Archive (`GET /admin/albums/{id}/cover-candidates`,
+outil MCP `find_cover`) et en proposer une par son lien dans un lot (`coverUrl`). Le serveur contacte alors ces
+sites, et seulement eux : https, liste fermée de sites revérifiée à chaque redirection, adresses publiques
+seulement, images JPEG / PNG / WebP de 200 à 6000 pixels, 5 Mo au plus ; une proposition refusée ne laisse aucune image. L'image est téléchargée au moment de la
+proposition et montrée dans **Admin > Propositions** ; rien ne change avant que vous appliquiez le lot. Un jeton
+d'agent dont l'interrupteur « seulement les sites connus » est décoché (voir [IA](ai.md)) peut proposer une
+jaquette de n'importe quel site https : seule la liste des sites saute, tous les autres contrôles restent. Dans ce
+mode, `[pochettes] hotes_interdits` (noms, avec leurs sous-domaines) et `ip_interdites` (adresses publiques ou
+plages IPv4) ne sont jamais contactés : ajoutez-y vos propres services publics, en particulier ceux protégés par
+une liste d'IP, que le serveur pourrait sinon joindre depuis son adresse publique. Ce site ([site] url) et ses
+adresses sont toujours bloqués. Quel que soit l'échec (site injoignable, page d'erreur, pas une image), l'IA ne
+reçoit que « image introuvable à cette adresse » ; le détail est dans le journal technique. Les
+recherches sont plafonnées par compte (`[limites] jaquettes_par_10min`, 60). Limites : le serveur doit joindre ces
+sites directement en IPv4 (aucun proxy sortant n'est utilisé, une machine seulement en IPv6 n'est pas prise en
+charge), et un téléchargement abandonne au bout de 20 s.
+
 ## Conservation et vie privée
 
 `[journaux]` fixe le dossier et le niveau des journaux, et la durée de conservation : entrées d'audit, tâches

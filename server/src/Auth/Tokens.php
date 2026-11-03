@@ -55,7 +55,7 @@ final class Tokens
             return null;
         }
         $row = $this->db->one(
-            "SELECT t.id AS token_id, t.kind, t.last_used_at, u.id AS user_id, u.email, u.display_name, u.role,
+            "SELECT t.id AS token_id, t.kind, t.capabilities, t.last_used_at, u.id AS user_id, u.email, u.display_name, u.role,
                     TIMESTAMPDIFF(SECOND, t.last_used_at, CURRENT_TIMESTAMP(3)) AS idle
                FROM access_tokens t JOIN users u ON u.id = t.user_id
               WHERE t.token_hash = ? AND t.revoked_at IS NULL
@@ -70,8 +70,19 @@ final class Tokens
         if (($expectedKind === 'web') !== $isWeb) {
             return null;
         }
-        return new Principal((int) $row['user_id'], (string) $row['email'], (string) $row['display_name'], (string) $row['role'],
-            (int) $row['token_id'], (string) $row['kind'], $isWeb ? $secret : null);
+        // Jeton d'agent dont le compte n'est plus agent : refusé (il prendrait sinon d'un coup tous les droits
+        // du nouveau rôle, sans aucune capacité vérifiée)
+        if ($row['kind'] === 'agent' && $row['role'] !== 'agent') {
+            return null;
+        }
+        $caps = null;
+        if ($row['role'] === 'agent') {
+            // Jeton d'agent : ses capacités, rien d'autre (aucune si la colonne est vide)
+            $decoded = json_decode((string) ($row['capabilities'] ?? '[]'), true);
+            $caps = is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
+        }
+        return new Principal((int) $row['user_id'], (string) ($row['email'] ?? ''), (string) $row['display_name'], (string) $row['role'],
+            (int) $row['token_id'], (string) $row['kind'], $isWeb ? $secret : null, $caps);
     }
 
     /** Note l'utilisation (et prolonge une session web), au plus toutes les 5 minutes. */

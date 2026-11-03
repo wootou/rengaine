@@ -8,6 +8,7 @@ namespace Musique\Api\Controllers;
 use Musique\Account\ServerSettings;
 use Musique\Api\Context;
 use Musique\Api\Format;
+use Musique\Auth\Capabilities;
 use Musique\Lang;
 use Musique\Auth\Passwords;
 use Musique\Http\ApiError;
@@ -101,8 +102,8 @@ final class AdminController
             'createdAt' => Format::date($t['created_at']), 'lastUsedAt' => Format::date($t['last_used_at']),
             'lastIp' => Format::ip($t['last_ip']), 'userAgent' => $t['user_agent'], 'expiresAt' => Format::date($t['expires_at']),
             'current' => (int) $t['id'] === $this->ctx->user()->tokenId,
-        ], $this->ctx->db->all(
-            'SELECT id, kind, name, token_prefix, created_at, last_used_at, last_ip, user_agent, expires_at FROM access_tokens
+        ] + ($t['kind'] === 'agent' ? ['capabilities' => self::caps($t['capabilities'])] : []), $this->ctx->db->all(
+            'SELECT id, kind, name, token_prefix, created_at, last_used_at, last_ip, user_agent, expires_at, capabilities FROM access_tokens
               WHERE user_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP(3)) ORDER BY last_used_at DESC, id DESC',
             [(int) $params['id']]
         ));
@@ -123,6 +124,9 @@ final class AdminController
         }
         if ($id === $me->userId && (($status !== null && $status !== 'active') || ($role !== null && $role !== 'admin'))) {
             throw new ApiError(409, 'conflict', 'Un admin ne peut ni se suspendre ni retirer son propre rôle d’admin');
+        }
+        if ($role !== null && $role !== 'agent' && $before['email'] === null) {
+            throw new ApiError(409, 'conflict', 'Un compte sans adresse e-mail ne peut être qu’agent');
         }
         if ($status !== null && $status !== $before['status'] && !in_array($status, self::TRANSITIONS[$before['status']] ?? [], true)) {
             throw new ApiError(409, 'conflict', "Passage de « {$before['status']} » à « $status » impossible");
@@ -174,14 +178,15 @@ final class AdminController
     public function createUser(array $params): Response
     {
         $in = new Input($this->ctx->request->json());
-        $email = $in->email('email');
-        $name = (string) $in->text('displayName', 1, 100);
         $role = (string) $in->enum('role', ['admin', 'user', 'agent']);
+        // Un compte agent (une IA) n'a pas besoin d'adresse : il ne reçoit pas de mail (IA-07)
+        $email = $role === 'agent' && in_array($in->raw()['email'] ?? null, [null, ''], true) ? null : $in->email('email');
+        $name = (string) $in->text('displayName', 1, 100);
         $password = $role === 'agent' ? null : $in->string('password', 10, 200);
         if ($role === 'agent' && $in->has('password')) {
             throw ApiError::invalid('password', 'Un compte agent n’a pas de mot de passe : créez-lui un jeton');
         }
-        if ($this->ctx->db->value('SELECT id FROM users WHERE email = ?', [$email]) !== null) {
+        if ($email !== null && $this->ctx->db->value('SELECT id FROM users WHERE email = ?', [$email]) !== null) {
             throw new ApiError(409, 'conflict', 'Un compte existe déjà avec cette adresse');
         }
         $this->ctx->db->run(
@@ -212,13 +217,57 @@ final class AdminController
         if ($user['status'] !== 'active') {
             throw new ApiError(409, 'conflict', 'Compte non actif');
         }
-        $token = $this->ctx->tokens()->create($id, $user['role'] === 'agent' ? 'agent' : 'app', $name, null, null);
+        $agent = $user['role'] === 'agent';
+        if (!$agent && $in->has('capabilities')) {
+            throw ApiError::invalid('capabilities', 'Les capacités ne concernent que les jetons d’agent');
+        }
+        // Jeton d'agent : capacités choisies, ou celles par défaut (IA-07)
+        $caps = $agent ? ($in->has('capabilities') ? Capabilities::clean((array) $in->raw()['capabilities'], 'capabilities') : Capabilities::defaults()) : null;
+        $token = $this->ctx->tokens()->create($id, $agent ? 'agent' : 'app', $name, null, null);
         if ($expiresAt !== null) {
             $this->ctx->db->run('UPDATE access_tokens SET expires_at = ? WHERE id = ?', [$expiresAt, $token['id']]);
         }
-        $this->ctx->audit('token.create', 'token', $token['id'], null, ['userId' => $id, 'name' => $name]);
+        if ($caps !== null) {
+            $this->ctx->db->run('UPDATE access_tokens SET capabilities = ? WHERE id = ?', [json_encode($caps), $token['id']]);
+        }
+        $this->ctx->audit('token.create', 'token', $token['id'], null, ['userId' => $id, 'name' => $name] + ($caps === null ? [] : ['capabilities' => $caps]));
         return Response::json(['token' => $token['secret'], 'tokenId' => $token['id'],
-            'user' => ['id' => $id, 'email' => $user['email'], 'displayName' => $user['display_name'], 'role' => $user['role']]], 201);
+            'user' => ['id' => $id, 'email' => $user['email'], 'displayName' => $user['display_name'], 'role' => $user['role']]]
+            + ($caps === null ? [] : ['capabilities' => $caps]), 201);
+    }
+
+    /** Capacités d'un jeton d'agent, cochées ou décochées par l'admin ; effet à la requête suivante (IA-07). */
+    public function updateToken(array $params): Response
+    {
+        $id = (int) $params['tokenId'];
+        $row = $this->ctx->db->one("SELECT user_id, kind, capabilities FROM access_tokens WHERE id = ? AND revoked_at IS NULL", [$id])
+            ?? throw ApiError::notFound('Jeton introuvable ou déjà révoqué');
+        if ($row['kind'] !== 'agent') {
+            throw new ApiError(409, 'conflict', 'Les capacités ne concernent que les jetons d’agent');
+        }
+        $in = new Input($this->ctx->request->json());
+        $raw = $in->raw()['capabilities'] ?? null;
+        if (!is_array($raw) || !array_is_list($raw)) {
+            throw ApiError::invalid('capabilities', 'Champ « capabilities » : liste attendue');
+        }
+        $before = self::caps($row['capabilities']);
+        $after = Capabilities::clean($raw, 'capabilities');
+        $this->ctx->db->run('UPDATE access_tokens SET capabilities = ? WHERE id = ?', [json_encode($after), $id]);
+        $this->ctx->audit('token.capabilities', 'token', $id, ['capabilities' => $before], ['capabilities' => $after, 'userId' => (int) $row['user_id']]);
+        return Response::json(['tokenId' => $id, 'capabilities' => $after]);
+    }
+
+    /** Catalogue des capacités d'un jeton d'agent, dans l'ordre d'affichage. */
+    public function listCapabilities(array $params): Response
+    {
+        return Response::json(['items' => Capabilities::catalog()]);
+    }
+
+    /** @return list<string> */
+    private static function caps(mixed $json): array
+    {
+        $d = json_decode((string) ($json ?? '[]'), true);
+        return is_array($d) ? array_values(array_filter($d, 'is_string')) : [];
     }
 
     public function revokeToken(array $params): Response
